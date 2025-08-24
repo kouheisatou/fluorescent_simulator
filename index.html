@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>蛍光灯っぽい四角（点灯率スライダー／ピーク固定0.05／橙→黄→白）</title>
+<style>
+  :root { --bg:#0e0f12; --panel:#14161b; --text:#e7eaf0; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; }
+  .wrap{ max-width: 900px; margin: 20px auto; padding: 16px; background:var(--panel);
+    border-radius: 16px; box-shadow: 0 16px 40px rgba(0,0,0,.35); }
+  h1{ font-size:1.1rem; margin:0 0 12px; letter-spacing:.01em; }
+  .row{ display:flex; align-items:center; gap:12px; margin-top:10px; }
+  .grow{ flex:1 1 auto; }
+  input[type=range]{ width:100%; }
+  #lamp{ display:block; width:100%; height:auto; border-radius: 0px; background:#0b0c0f; margin-top:10px; }
+  .hint{ opacity:.9; font-size:.92rem; line-height:1.6; margin-top:10px; }
+  code{ background:#11131a; padding:2px 6px; border-radius:6px; }
+  label{ width:240px; opacity:.9; }
+  .val{ width:120px; text-align:right; }
+.timeline{ display:block; width:100%; height:auto; background:#0b0c0f; border:1px solid rgba(255,255,255,0.12); user-select:none; }
+.tiny{ font-size:12px; opacity:.8; }
+button{ background:#1b1e24; color:#e7eaf0; border:1px solid rgba(255,255,255,.12); padding:6px 10px; border-radius:8px; cursor:pointer; }
+button:hover{ background:#212530; }
+input[type=number]{ width:80px; background:#1b1e24; color:#e7eaf0; border:1px solid rgba(255,255,255,.12); border-radius:6px; padding:4px 6px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>蛍光灯シミュレーター</h1>
+
+    <div class="row">
+      <label for="t">点灯率 t</label>
+      <div class="grow"><input id="t" type="range" min="0" max="1" step="0.001" value="0" /></div>
+      <div class="val"><span id="tVal">0.000</span></div>
+    </div>
+
+    <div class="row">
+      <label for="sigma">減衰率 σ（ピークからの広がり）</label>
+      <div class="grow"><input id="sigma" type="range" min="0.005" max="0.500" step="0.001" value="0.060" /></div>
+      <div class="val"><span id="sigmaVal">0.060</span></div>
+    </div>
+
+    <div class="row">
+      <label for="peakPos">ピーク位置（端からの距離）</label>
+      <div class="grow"><input id="peakPos" type="range" min="0.02" max="0.20" step="0.001" value="0.05" /></div>
+      <div class="val"><span id="peakPosVal">0.050</span></div>
+    </div>
+
+    <div class="row">
+      <label for="lampLength">蛍光灯の長さ（相対的）</label>
+      <div class="grow"><input id="lampLength" type="range" min="0.3" max="3.0" step="0.01" value="0.92" /></div>
+      <div class="val"><span id="lampLengthVal">0.92</span></div>
+    </div>
+
+    <!-- タイムライン（t） -->
+    <div class="row" style="align-items:center; margin-top:8px;">
+      <label class="tiny" style="width:auto;">t のタイムライン（0→1）</label>
+    </div>
+    <canvas id="timelineT" width="1024" height="140" class="timeline"></canvas>
+
+    <!-- タイムライン（σ） -->
+    <div class="row" style="align-items:center; margin-top:8px;">
+      <label class="tiny" style="width:auto;">σ のタイムライン（0.02→0.20）</label>
+    </div>
+    <canvas id="timelineS" width="1024" height="140" class="timeline"></canvas>
+
+    <!-- 再生シーケンス表示 -->
+    <div class="row" style="align-items:center; margin-top:12px;">
+      <label class="tiny" style="width:auto;">再生シーケンス</label>
+    </div>
+    <canvas id="playbackSequence" width="1024" height="60" class="timeline"></canvas>
+
+    <!-- 再生コントロール -->
+    <div class="row" style="align-items:center;gap:8px; margin-top:8px;">
+      <button id="playPause">▶︎ 再生</button>
+      <button id="exportVideo">📹 動画出力</button>
+      <label style="width:auto;">長さ(秒)</label>
+      <input id="duration" type="number" min="0.5" max="30" step="0.1" value="4.0"/>
+      <label style="width:auto; display:flex; align-items:center; gap:6px;">
+        <input id="loop" type="checkbox" /> ループ
+      </label>
+      <div class="val" style="width:auto;">t=<span id="timeVal">0.00</span>s</div>
+      <div class="val" style="width:auto; opacity:0.7;">(スペースキー: 再生/停止)</div>
+    </div>
+
+    <canvas id="lamp" width="1024" height="220"></canvas>
+
+    <p class="hint">
+      <b>タイムライン操作:</b><br>
+      • 空いている場所をクリック → 新しい点を追加<br>
+      • 点をクリック → 単体選択（赤色で表示）<br>
+      • 選択した点をドラッグ → 位置を移動<br>
+      • Shift + 点をクリック → 複数選択（選択した点をまとめて移動可能）<br>
+      • Backspace/Delete → 選択した点を削除<br>
+      • Esc → 選択解除<br><br>
+      <b>再生シーケンス:</b><br>
+      • クリックで再生位置を変更<br>
+      • 色の濃さが点灯の強さ、下部の線がσの値を表示<br><br>
+      <b>動画出力:</b><br>
+      • 📹ボタンで60fps WebM動画として出力（ブラウザでダウンロード）
+    </p>
+  </div>
+
+<script>
+// ======================= Utils =======================
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const mix = (a,b,t) => a*(1-t) + b*t;
+const smoothstep01 = x => { x = clamp01(x); return x*x*(3-2*x); };
+const invlerp = (a,b,x) => (x-a)/((b-a)+1e-9);
+function gauss(x, m, s){ const z=(x-m)/(s+1e-9); return Math.exp(-0.5*z*z); }
+
+// ======================= Model =======================
+let CFG = { OFFSET: 0.05 }; // 端からの距離（動的に変更可能）
+
+// フェーズ: A=橙拡散(0..0.80), B=橙→黄(0.80..0.90), C=黄→白拡散(0.90..0.98), D=均一白(0.98..1.00)
+function phases(t){
+  return {
+    A: smoothstep01(invlerp(0.00, 0.80, t)),
+    B: smoothstep01(invlerp(0.80, 0.90, t)),
+    C: smoothstep01(invlerp(0.90, 0.98, t)),
+    D: smoothstep01(invlerp(0.98, 1.00, t)),
+  };
+}
+
+// 主関数: t∈[0,1], u∈[0,1], sigma∈[0.005,0.50], peakPos∈[0.02,0.20], lampLength -> [r,g,b,a]
+function lampColorAt(t, u, sigma, peakPos = 0.05, lampLength = 1.0){
+  t = clamp01(t); u = clamp01(u); sigma = clamp01((sigma-0.005)/0.495); // 正規化(0..1)
+  const {A,B,C,D} = phases(t);
+
+  // 蛍光灯の長さに応じてσを調整（長いほど鋭く）
+  // 長い蛍光灯（1.5倍以上）では大幅に鋭くする
+  let lengthFactor = 1.0;
+  if (lampLength > 1.5) {
+    // 1.5倍を超える場合、急激に鋭くする
+    lengthFactor = Math.max(0.2, 0.8 / lampLength);
+  } else if (lampLength > 1.0) {
+    // 1.0-1.5倍の場合、徐々に鋭くする
+    lengthFactor = 1.0 - (lampLength - 1.0) * 0.6;
+  }
+  const adjustedSigma = sigma * lengthFactor;
+
+  // Aで暖色の広がりが増える（長さ調整済みσを使用、より広い範囲対応）
+  const sigmaWarm = 0.005 + 0.495 * mix(0.8, 1.8, A) * (0.01 + 0.99*((adjustedSigma*0.85)+0.15));
+  const off = peakPos; // ピーク位置をパラメータから取得
+
+  // 左右ピーク（正規化）
+  let S = gauss(u, off, sigmaWarm) + gauss(u, 1-off, sigmaWarm);
+  const Smax = 1 + Math.exp(-Math.pow(1 - 2*off, 2) / (2*sigmaWarm*sigmaWarm));
+  S = Math.min(1, S / Smax);
+
+  // 黄の出現（白より先に出る）。Bでピーク近傍、C/Dで減衰
+  const yellowLocal = Math.pow(S, 0.9) * B * (1 - 0.55*C) * (1 - 0.7*D);
+
+  // 白の拡散：Cでピーク中心から拡大、Dで全面白（より広い範囲対応）
+  const dToPeaks = Math.min(Math.abs(u-off), Math.abs(u-(1-off)));
+  const sigmaSpreadMax = 0.05 + 0.95 * (0.10 + 0.90*adjustedSigma); // 調整済みσに応じて最大半径
+  const sigmaSpread = sigmaSpreadMax * C;
+  const whiteSpread = sigmaSpread>0.001 ? Math.exp(-0.5 * (dToPeaks/sigmaSpread)**2) : 0.0;
+  let whiteWeight = clamp01( Math.pow(S, 0.9)*B*0.12 + 0.88*whiteSpread );
+  whiteWeight = mix(whiteWeight, 1.0, D);
+
+  // 輝度
+  let brightness = 0.0
+    + 0.72 * (A * Math.pow(S, 1.1))
+    + 0.55 * (B * Math.pow(S, 1.0))
+    + 0.50 * C * (0.25 + 0.75*whiteSpread)
+    + 0.60 * D;
+  brightness = Math.pow(clamp01(brightness), 0.9);
+
+  // 色：橙→黄→白
+  const ORANGE = [255, 112, 54];
+  const YELLOW = [255, 224, 110];
+  const WHITE  = [248, 252, 255];
+
+  const yk = clamp01(yellowLocal);
+  const baseR = mix(ORANGE[0], YELLOW[0], yk);
+  const baseG = mix(ORANGE[1], YELLOW[1], yk);
+  const baseB = mix(ORANGE[2], YELLOW[2], yk);
+
+  const r = mix(baseR, WHITE[0], whiteWeight);
+  const g = mix(baseG, WHITE[1], whiteWeight);
+  const b = mix(baseB, WHITE[2], whiteWeight);
+  const alpha = brightness; // 0..1 — t=0 で 0（完全透明）
+  return [r|0, g|0, b|0, Math.round(alpha*255)];
+}
+
+// ======================= Rendering =======================
+function drawLamp(ctx, t, sigma, peakPos = 0.05, lampLength = 0.92){
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  // 背景（壁）
+  const wall = ctx.createLinearGradient(0,0,0,H);
+  wall.addColorStop(0, '#0b0c0f');
+  wall.addColorStop(1, '#0e0f12');
+  ctx.fillStyle = wall;
+  ctx.fillRect(0,0,W,H);
+
+  // ランプ筐体（長さを調整、必要に応じて全体を縮小）
+  const basePadX = Math.floor(W*0.04);
+  const padY = Math.floor(H*0.32);
+  const baseFullWidth = W - basePadX*2;
+  const desiredWidth = Math.floor(baseFullWidth * lampLength);
+  
+  // はみ出す場合は全体を縮小
+  let scaleFactor = 1.0;
+  let padX = basePadX;
+  let fullWidth = baseFullWidth;
+  let rw = desiredWidth;
+  
+  if (desiredWidth > baseFullWidth) {
+    // 縮小が必要
+    scaleFactor = baseFullWidth / desiredWidth;
+    rw = baseFullWidth;
+    // パディングも縮小
+    padX = Math.floor(basePadX * scaleFactor);
+    fullWidth = W - padX*2;
+    rw = Math.floor(fullWidth);
+  }
+  
+  const rh = Math.floor(H*0.36 * scaleFactor); // 高さも比例して縮小
+  const lampStartX = padX + Math.floor((fullWidth - rw) / 2); // 中央寄せ
+
+  // 上側の筐体影（蛍光灯の幅に合わせる、縮小も考慮）
+  const shadowHeight = Math.floor(22 * scaleFactor);
+  const sh = ctx.createLinearGradient(0, padY-shadowHeight, 0, padY);
+  sh.addColorStop(0, 'rgba(0,0,0,0.75)');
+  sh.addColorStop(1, 'rgba(0,0,0,0.00)');
+  ctx.fillStyle = sh; ctx.fillRect(lampStartX, padY-shadowHeight, rw, shadowHeight);
+
+  // 角なしクリップ
+  ctx.save(); ctx.beginPath(); ctx.rect(lampStartX, padY, rw, rh); ctx.clip();
+
+  // ベース（濃いグレー）
+  ctx.fillStyle = 'rgb(60,60,60)';
+  ctx.fillRect(lampStartX, padY, rw, rh);
+
+  // 発光面（横方向256サンプル）
+  const L = 256; const strip = ctx.createImageData(L, rh);
+  for(let y=0;y<rh;y++){
+    for(let x=0;x<L;x++){
+      const u = x/(L-1);
+      const [r,g,b,a] = lampColorAt(t, u, sigma, peakPos, lampLength);
+      const i = (y*L + x)*4; strip.data[i]=r; strip.data[i+1]=g; strip.data[i+2]=b; strip.data[i+3]=a;
+    }
+  }
+  const tmp = document.createElement('canvas'); tmp.width=L; tmp.height=rh;
+  tmp.getContext('2d').putImageData(strip, 0, 0);
+  ctx.imageSmoothingEnabled = true; ctx.drawImage(tmp, lampStartX, padY, rw, rh);
+
+  // 端ハイライト（無点灯時は描かない、縮小も考慮）
+  if (t > 0.0001) {
+    const edgeWidth = Math.floor(rw*0.12);
+    const edgeL = ctx.createLinearGradient(lampStartX,0,lampStartX+edgeWidth,0);
+    edgeL.addColorStop(0, 'rgba(255,255,255,0.18)'); edgeL.addColorStop(1,'rgba(255,255,255,0.00)');
+    ctx.fillStyle = edgeL; ctx.fillRect(lampStartX, padY, edgeWidth, rh);
+
+    const edgeR = ctx.createLinearGradient(lampStartX+rw-edgeWidth,0,lampStartX+rw,0);
+    edgeR.addColorStop(0, 'rgba(255,255,255,0.00)'); edgeR.addColorStop(1,'rgba(255,255,255,0.18)');
+    ctx.fillStyle = edgeR; ctx.fillRect(lampStartX+rw-edgeWidth, padY, edgeWidth, rh);
+  }
+
+  ctx.restore();
+}
+
+
+
+// ======================= Playback Sequence Display =======================
+class PlaybackSequence{
+  constructor(canvas){
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.isDragging = false;
+    this.setupMouseEvents();
+  }
+  
+  setupMouseEvents(){
+    this.canvas.style.cursor = 'pointer';
+    this.canvas.addEventListener('mousedown', (e) => this.onMouseDown(e));
+    this.canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
+    this.canvas.addEventListener('mouseup', (e) => this.onMouseUp(e));
+    this.canvas.addEventListener('mouseleave', (e) => this.onMouseLeave(e));
+  }
+  
+  getMousePos(e){
+    const rect = this.canvas.getBoundingClientRect();
+    const scaleX = this.canvas.width / rect.width;
+    return {
+      x: (e.clientX - rect.left) * scaleX
+    };
+  }
+  
+  onMouseDown(e){
+    const pos = this.getMousePos(e);
+    const playheadX = (playhead / duration) * this.canvas.width;
+    
+    // 再生ヘッドの近くをクリックした場合はドラッグ開始
+    if(Math.abs(pos.x - playheadX) < 10) {
+      this.isDragging = true;
+      this.canvas.style.cursor = 'grabbing';
+      // 再生を停止
+      playing = false;
+      playBtn.textContent = '▶︎ 再生';
+    } else {
+      // 通常のクリック - 再生位置変更
+      const clickTime = (pos.x / this.canvas.width) * duration;
+      playhead = Math.max(0, Math.min(duration, clickTime));
+      syncFromTracks();
+      redrawTimelines();
+    }
+  }
+  
+  onMouseMove(e){
+    const pos = this.getMousePos(e);
+    
+    if(this.isDragging) {
+      // ドラッグ中 - 再生位置を更新
+      const newTime = (pos.x / this.canvas.width) * duration;
+      playhead = Math.max(0, Math.min(duration, newTime));
+      syncFromTracks();
+      redrawTimelines();
+    } else {
+      // ホバー効果
+      const playheadX = (playhead / duration) * this.canvas.width;
+      this.canvas.style.cursor = Math.abs(pos.x - playheadX) < 10 ? 'grab' : 'pointer';
+    }
+  }
+  
+  onMouseUp(e){
+    if(this.isDragging) {
+      this.isDragging = false;
+      this.canvas.style.cursor = 'pointer';
+    }
+  }
+  
+  onMouseLeave(e){
+    if(this.isDragging) {
+      this.isDragging = false;
+    }
+    this.canvas.style.cursor = 'pointer';
+  }
+  
+  draw(){
+    const ctx = this.ctx, W = this.canvas.width, H = this.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    
+    // 背景
+    ctx.fillStyle = '#0b0c0f';
+    ctx.fillRect(0, 0, W, H);
+    
+    // グリッド線（時間軸）
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for(let i = 0; i <= 10; i++){
+      const x = i / 10 * W;
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, H);
+    }
+    ctx.stroke();
+    
+    // 現在の再生位置を可視化
+    const sections = 20; // セクション数
+    const sectionWidth = W / sections;
+    
+    for(let i = 0; i < sections; i++){
+      const time = (i / sections) * duration;
+      const t = tTrack.valueAt(time);
+      const sigma = sTrack.valueAt(time);
+      
+      // tの値に基づいて色を決定
+      let intensity = t;
+      let color;
+      
+      if(t < 0.1){
+        color = `rgba(50, 50, 50, ${intensity})`;
+      } else if(t < 0.8){
+        // オレンジ系
+        const orange = Math.floor(255 * intensity);
+        const red = Math.floor(255 * intensity * 0.8);
+        color = `rgba(${orange}, ${red}, 0, ${intensity})`;
+      } else {
+        // 白系
+        const white = Math.floor(255 * intensity);
+        color = `rgba(${white}, ${white}, ${white}, ${intensity})`;
+      }
+      
+      ctx.fillStyle = color;
+      ctx.fillRect(i * sectionWidth, H * 0.2, sectionWidth - 1, H * 0.6);
+      
+      // σの値を高さで表現（薄い線）
+      const sigmaHeight = ((sigma - 0.02) / (0.20 - 0.02)) * H * 0.15;
+      ctx.fillStyle = 'rgba(255, 212, 124, 0.5)';
+      ctx.fillRect(i * sectionWidth, H * 0.85 - sigmaHeight, sectionWidth - 1, sigmaHeight);
+    }
+    
+    // 再生ヘッド
+    const xh = (playhead / duration) * W;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(xh, 0);
+    ctx.lineTo(xh, H);
+    ctx.stroke();
+    
+    // 時間ラベル
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.font = '10px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    for(let i = 0; i <= 10; i++){
+      const time = (i / 10) * duration;
+      const x = i / 10 * W;
+      if(x + 30 < W || i === 0){
+        ctx.fillText(`${time.toFixed(1)}s`, x + 2, 2);
+      }
+    }
+  }
+}
+
+// ======================= Timeline graph & playback =======================
+class Track{
+  constructor(canvas, {min, max, color, label, keys=[]}){
+    this.canvas = canvas; this.ctx = canvas.getContext('2d');
+    this.min=min; this.max=max; this.color=color; this.label=label; this.keys=keys;
+    this.isDragging = false;
+    this.dragIndex = -1;
+    this.dragOffset = {x: 0, y: 0};
+    this.mouseDownPos = {x: 0, y: 0};
+    this.hasMoved = false;
+    
+    // 複数選択機能
+    this.selectedPoints = new Set();
+    this.isDraggingMultiple = false;
+    this.multiDragOffsets = new Map();
+    
+    this.setupMouseEvents();
+  }
+  setKeys(keys){ this.keys = keys.slice().sort((a,b)=>a.time-b.time); }
+  timeToX(t){ return (t/duration) * this.canvas.width; }
+  valueToY(v){ return (1 - (v - this.min)/(this.max - this.min)) * (this.canvas.height-1); }
+  valueAt(t){
+    if(!this.keys.length) return 0;
+    if(t<=this.keys[0].time) return this.keys[0].value;
+    if(t>=this.keys[this.keys.length-1].time) return this.keys[this.keys.length-1].value;
+    for(let i=0;i<this.keys.length-1;i++){
+      const a=this.keys[i], b=this.keys[i+1];
+      if(t>=a.time && t<=b.time){ const u=(t-a.time)/((b.time-a.time)||1e-9); return a.value + (b.value-a.value)*u; }
+    }
+    return this.keys[this.keys.length-1].value;
+  }
+  draw(){
+    const ctx=this.ctx, W=this.canvas.width, H=this.canvas.height; ctx.clearRect(0,0,W,H);
+    ctx.fillStyle='#0b0c0f'; ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle='rgba(255,255,255,0.08)'; ctx.lineWidth=1; ctx.beginPath();
+    for(let i=0;i<=10;i++){ const x=i/10*W; ctx.moveTo(x,0); ctx.lineTo(x,H);} ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,0.8)'; ctx.font='12px system-ui, -apple-system, Segoe UI, sans-serif'; ctx.textBaseline='top'; ctx.fillText(`${this.label}`, 6, 4);
+    if(this.keys.length){
+      ctx.strokeStyle=this.color; ctx.lineWidth=2; ctx.beginPath();
+      for(let i=0;i<this.keys.length;i++){
+        const x=this.timeToX(this.keys[i].time), y=this.valueToY(this.keys[i].value);
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+      for(let i=0;i<this.keys.length;i++){
+        const x=this.timeToX(this.keys[i].time), y=this.valueToY(this.keys[i].value);
+        const isSelected = this.selectedPoints.has(i);
+        
+        // 選択された点は異なる色で表示
+        ctx.fillStyle = isSelected ? '#ff6b6b' : '#1b1e24';
+        ctx.beginPath(); 
+        ctx.arc(x, y, isSelected ? 5 : 4, 0, Math.PI*2); 
+        ctx.fill();
+        ctx.strokeStyle = isSelected ? '#ff4444' : this.color; 
+        ctx.lineWidth = isSelected ? 3 : 2; 
+        ctx.stroke();
+      }
+      const xh = this.timeToX(playhead); ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(xh,0); ctx.lineTo(xh,H); ctx.stroke();
+    }
+  }
+
+  setupMouseEvents(){
+    this.canvas.style.cursor = 'pointer';
+    
+    this.canvas.addEventListener('mousedown', (e) => this.onMouseDown(e));
+    this.canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
+    this.canvas.addEventListener('mouseup', (e) => this.onMouseUp(e));
+    this.canvas.addEventListener('mouseleave', (e) => this.onMouseLeave(e));
+  }
+
+  getMousePos(e){
+    const rect = this.canvas.getBoundingClientRect();
+    const scaleX = this.canvas.width / rect.width;
+    const scaleY = this.canvas.height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY
+    };
+  }
+
+  findNearestPoint(x, y){
+    let nearest = -1;
+    let minDist = Infinity;
+    const threshold = 12; // クリック判定の閾値を少し大きくして操作しやすく
+    
+    for(let i = 0; i < this.keys.length; i++){
+      const px = this.timeToX(this.keys[i].time);
+      const py = this.valueToY(this.keys[i].value);
+      const dist = Math.sqrt((x - px) ** 2 + (y - py) ** 2);
+      if(dist < threshold && dist < minDist){
+        minDist = dist;
+        nearest = i;
+      }
+    }
+    return nearest;
+  }
+
+  xToTime(x){
+    return Math.max(0, Math.min(duration, (x / this.canvas.width) * duration));
+  }
+
+  yToValue(y){
+    const normalized = 1 - (y / (this.canvas.height - 1));
+    return Math.max(this.min, Math.min(this.max, this.min + normalized * (this.max - this.min)));
+  }
+
+  onMouseDown(e){
+    const pos = this.getMousePos(e);
+    const nearestIndex = this.findNearestPoint(pos.x, pos.y);
+    
+    this.mouseDownPos = {x: pos.x, y: pos.y};
+    this.hasMoved = false;
+    
+    if(nearestIndex >= 0){
+      if(e.shiftKey){
+        // シフトクリック - 複数選択
+        if(this.selectedPoints.has(nearestIndex)){
+          this.selectedPoints.delete(nearestIndex);
+        } else {
+          this.selectedPoints.add(nearestIndex);
+        }
+        this.draw();
+      } else {
+        // 通常クリック - 選択またはドラッグ準備
+        if(this.selectedPoints.size > 0){
+          // 既に選択がある場合
+          if(!this.selectedPoints.has(nearestIndex)){
+            // 選択されていない点をクリック - 選択を変更
+            this.selectedPoints.clear();
+            this.selectedPoints.add(nearestIndex);
+            this.draw();
+          } else {
+            // 選択済みの点をクリック - まとめてドラッグ準備
+            this.isDraggingMultiple = true;
+            this.setupMultiDrag(pos);
+          }
+        } else {
+          // 選択がない場合 - 単一選択してドラッグ準備
+          this.selectedPoints.add(nearestIndex);
+          this.isDragging = true;
+          this.dragIndex = nearestIndex;
+          const px = this.timeToX(this.keys[nearestIndex].time);
+          const py = this.valueToY(this.keys[nearestIndex].value);
+          this.dragOffset = { x: pos.x - px, y: pos.y - py };
+          this.canvas.style.cursor = 'grabbing';
+          this.draw();
+        }
+      }
+    } else {
+      // 空いているところをクリック
+      if(!e.shiftKey){
+        // 通常クリック - 選択解除して新しい点を追加
+        this.selectedPoints.clear();
+        const newTime = this.xToTime(pos.x);
+        const newValue = this.yToValue(pos.y);
+        this.keys.push({ time: newTime, value: newValue });
+        this.keys.sort((a, b) => a.time - b.time);
+        this.draw();
+        syncFromTracks();
+      }
+    }
+  }
+
+  setupMultiDrag(pos){
+    this.multiDragOffsets.clear();
+    for(const index of this.selectedPoints){
+      const px = this.timeToX(this.keys[index].time);
+      const py = this.valueToY(this.keys[index].value);
+      this.multiDragOffsets.set(index, { x: pos.x - px, y: pos.y - py });
+    }
+    this.canvas.style.cursor = 'grabbing';
+  }
+
+  onMouseMove(e){
+    const pos = this.getMousePos(e);
+    
+    if(this.isDraggingMultiple){
+      // 複数点のドラッグ中
+      const dragDistance = Math.sqrt(
+        Math.pow(pos.x - this.mouseDownPos.x, 2) + 
+        Math.pow(pos.y - this.mouseDownPos.y, 2)
+      );
+      
+      if(dragDistance > 3){
+        this.hasMoved = true;
+      }
+      
+      // 選択された全ての点を移動
+      const newPositions = new Map();
+      for(const index of this.selectedPoints){
+        const offset = this.multiDragOffsets.get(index);
+        const newTime = this.xToTime(pos.x - offset.x);
+        const newValue = this.yToValue(pos.y - offset.y);
+        newPositions.set(index, { time: newTime, value: newValue });
+      }
+      
+      // 新しい位置を適用
+      for(const [index, newPos] of newPositions){
+        this.keys[index].time = newPos.time;
+        this.keys[index].value = newPos.value;
+      }
+      
+      this.keys.sort((a, b) => a.time - b.time);
+      this.draw();
+      syncFromTracks();
+      
+    } else if(this.isDragging && this.dragIndex >= 0){
+      // 単一点のドラッグ中
+      const dragDistance = Math.sqrt(
+        Math.pow(pos.x - this.mouseDownPos.x, 2) + 
+        Math.pow(pos.y - this.mouseDownPos.y, 2)
+      );
+      
+      if(dragDistance > 3){
+        this.hasMoved = true;
+      }
+      
+      const newTime = this.xToTime(pos.x - this.dragOffset.x);
+      const newValue = this.yToValue(pos.y - this.dragOffset.y);
+      
+      this.keys[this.dragIndex].time = newTime;
+      this.keys[this.dragIndex].value = newValue;
+      this.keys.sort((a, b) => a.time - b.time);
+      
+      // ソート後のインデックスを更新
+      for(let i = 0; i < this.keys.length; i++){
+        if(this.keys[i].time === newTime && this.keys[i].value === newValue){
+          this.dragIndex = i;
+          break;
+        }
+      }
+      
+      this.draw();
+      syncFromTracks();
+    } else {
+      // ホバー効果
+      const nearestIndex = this.findNearestPoint(pos.x, pos.y);
+      this.canvas.style.cursor = nearestIndex >= 0 ? 'grab' : 'crosshair';
+    }
+  }
+
+  onMouseUp(e){
+    if(this.isDraggingMultiple){
+      this.isDraggingMultiple = false;
+      this.multiDragOffsets.clear();
+      this.hasMoved = false;
+      this.canvas.style.cursor = 'pointer';
+    } else if(this.isDragging){
+      this.isDragging = false;
+      this.dragIndex = -1;
+      this.hasMoved = false;
+      this.canvas.style.cursor = 'pointer';
+    }
+  }
+
+  onMouseLeave(e){
+    if(this.isDraggingMultiple){
+      this.isDraggingMultiple = false;
+      this.multiDragOffsets.clear();
+      this.hasMoved = false;
+    } else if(this.isDragging){
+      this.isDragging = false;
+      this.dragIndex = -1;
+      this.hasMoved = false;
+    }
+    this.canvas.style.cursor = 'pointer';
+  }
+
+  // 選択された点を削除
+  deleteSelectedPoints(){
+    if(this.selectedPoints.size === 0) return false;
+    
+    // インデックスを降順でソートして削除（後ろから削除することで、インデックスのずれを防ぐ）
+    const indicesToDelete = Array.from(this.selectedPoints).sort((a, b) => b - a);
+    
+    for(const index of indicesToDelete){
+      this.keys.splice(index, 1);
+    }
+    
+    this.selectedPoints.clear();
+    this.draw();
+    syncFromTracks();
+    return true;
+  }
+
+  // 選択を解除
+  clearSelection(){
+    if(this.selectedPoints.size === 0) return false;
+    this.selectedPoints.clear();
+    this.draw();
+    return true;
+  }
+}
+
+// プリセット: 3回点滅（ため→一瞬点灯）後、4回目で安定
+function applyFlickerPreset(){
+  const D = duration; // 総秒
+  // ための長さ: 1回目長い、2,3短い、4回目やや長い（比率）
+  const hold1=0.40*D, hold2=0.18*D, hold3=0.14*D, hold4=0.20*D; // 合計0.92D
+  const flash = 0.02*D; // 一瞬点灯（各0.02D）→合計 0.06D
+  const tail = Math.max(0.0, D - (hold1+hold2+hold3+hold4 + 3*flash)); // 残り（安定立ち上がり）
+
+  const keysT = [];
+  let t = 0; const push=(time,value)=>keysT.push({time:Math.min(time,D), value});
+  const charge = (start, dur, pre, peak)=>{
+    // 溜め: 0→pre へゆっくり（線形近似）
+    push(start, 0.0); push(start + dur*0.9, pre);
+    // フラッシュ: 一瞬 peak まで上げてすぐ落とす
+    push(start + dur,  peak);
+    push(start + dur + flash*0.6, 0.10); // すぐ消灯
+    return start + dur + flash;
+  };
+  t = charge(0, hold1, 0.45, 0.92);
+  t = charge(t, hold2, 0.55, 0.96);
+  t = charge(t, hold3, 0.65, 0.98);
+  // 4回目: ため→鋭い立ち上がり
+  push(t, 0.0); push(t + hold4*0.90, 0.75);
+  push(t + hold4, 0.95);
+  push(t + hold4 + Math.max(0.05*D, tail*0.15), 1.00); // より短時間で急激に 1.0
+  push(D, 1.00);
+  tTrack.setKeys(keysT);
+
+  // σ: ため中はやや狭い→フラッシュで広い→安定で中庸
+  const keysS = [];
+  const pushS=(time,value)=>keysS.push({time:Math.min(time,D), value});
+  let s=0;
+  const chargeS=(start, dur)=>{
+    pushS(start, 0.030); pushS(start + dur*0.9, 0.045); // ためでちょい広がる
+    pushS(start + dur, 0.080); // フラッシュ時に広く
+    pushS(start + dur + flash*0.6, 0.035); // 直後に戻る
+    return start + dur + flash;
+  };
+  s = chargeS(0, hold1);
+  s = chargeS(s, hold2);
+  s = chargeS(s, hold3);
+  // 4回目: ため→急激に広い→安定（より広い範囲を活用）
+  pushS(s, 0.035); pushS(s + hold4*0.90, 0.065);
+  pushS(s + hold4 + Math.max(0.05*D, tail*0.15), 0.120);
+  pushS(D, 0.120);
+  sTrack.setKeys(keysS);
+}
+
+// ======================= Wiring =======================
+const canvas = document.getElementById('lamp');
+const ctx = canvas.getContext('2d');
+const tSlider = document.getElementById('t');
+const sSlider = document.getElementById('sigma');
+const peakPosSlider = document.getElementById('peakPos');
+const lampLengthSlider = document.getElementById('lampLength');
+const tVal = document.getElementById('tVal');
+const sVal = document.getElementById('sigmaVal');
+const peakPosVal = document.getElementById('peakPosVal');
+const lampLengthVal = document.getElementById('lampLengthVal');
+
+const tlT = document.getElementById('timelineT');
+const tlS = document.getElementById('timelineS');
+const playbackSeqCanvas = document.getElementById('playbackSequence');
+const playBtn = document.getElementById('playPause');
+const exportBtn = document.getElementById('exportVideo');
+const loopChk = document.getElementById('loop');
+const durInput = document.getElementById('duration');
+const timeVal = document.getElementById('timeVal');
+
+let duration = parseFloat(durInput.value);
+let playhead = 0.0;
+let playing = false; let lastPerf = 0;
+
+const tTrack = new Track(tlT, {min:0, max:1, label:'t', color:'#7cc9ff', keys:[]});
+const sTrack = new Track(tlS, {min:0.005, max:0.50, label:'σ', color:'#ffd27c', keys:[]});
+const playbackSequence = new PlaybackSequence(playbackSeqCanvas);
+applyFlickerPreset();
+
+function syncFromTracks(){
+  const t = tTrack.valueAt(playhead);
+  const s = sTrack.valueAt(playhead);
+  tSlider.value = t.toFixed(3); sSlider.value = s.toFixed(3);
+  tVal.textContent = (+tSlider.value).toFixed(3);
+  
+  // σ値表示（長さによる調整情報も含む）
+  const lampLen = +lampLengthSlider.value;
+  const sigmaVal = +sSlider.value;
+  let lengthFactor = 1.0;
+  if (lampLen > 1.5) {
+    lengthFactor = Math.max(0.2, 0.8 / lampLen);
+  } else if (lampLen > 1.0) {
+    lengthFactor = 1.0 - (lampLen - 1.0) * 0.6;
+  }
+  
+  if (lengthFactor < 0.99) {
+    sVal.textContent = `${sigmaVal.toFixed(3)} (×${lengthFactor.toFixed(2)})`;
+  } else {
+    sVal.textContent = sigmaVal.toFixed(3);
+  }
+  
+  peakPosVal.textContent = (+peakPosSlider.value).toFixed(3);
+  
+  // 蛍光灯の長さ表示（縮小情報も含む）
+  if (lampLen > 1.0) {
+    lampLengthVal.textContent = `${lampLen.toFixed(2)} (縮小)`;
+  } else {
+    lampLengthVal.textContent = lampLen.toFixed(2);
+  }
+  
+  timeVal.textContent = playhead.toFixed(2);
+  drawLamp(ctx, +tSlider.value, +sSlider.value, +peakPosSlider.value, +lampLengthSlider.value);
+}
+
+function redrawTimelines(){ 
+  tTrack.draw(); 
+  sTrack.draw(); 
+  playbackSequence.draw(); 
+}
+
+// 動画出力機能
+async function exportVideo(){
+  const fps = 60;
+  const totalFrames = Math.floor(duration * fps);
+  
+  exportBtn.textContent = '📹 出力中...';
+  exportBtn.disabled = true;
+  
+  try {
+    // MediaRecorder用のストリームを作成
+    const stream = canvas.captureStream(fps);
+    const mediaRecorder = new MediaRecorder(stream, {
+      mimeType: 'video/webm;codecs=vp9',
+      videoBitsPerSecond: 8000000 // 8Mbps
+    });
+    
+    const chunks = [];
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        chunks.push(event.data);
+      }
+    };
+    
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `fluorescent_lamp_${Date.now()}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      exportBtn.textContent = '📹 動画出力';
+      exportBtn.disabled = false;
+    };
+    
+    // 録画開始
+    mediaRecorder.start();
+    
+    // フレームごとに描画
+    for(let frame = 0; frame < totalFrames; frame++){
+      const currentTime = (frame / fps);
+      const t = tTrack.valueAt(currentTime);
+      const s = sTrack.valueAt(currentTime);
+      const peakPos = +peakPosSlider.value;
+      const lampLen = +lampLengthSlider.value;
+      
+      drawLamp(ctx, t, s, peakPos, lampLen);
+      
+      // 進捗表示
+      if(frame % 30 === 0){
+        exportBtn.textContent = `📹 出力中... ${Math.floor((frame/totalFrames)*100)}%`;
+      }
+      
+      // フレーム間の待機
+      await new Promise(resolve => setTimeout(resolve, 1000/fps));
+    }
+    
+    // 録画停止
+    setTimeout(() => {
+      mediaRecorder.stop();
+    }, 100);
+    
+  } catch (error) {
+    console.error('動画出力エラー:', error);
+    alert('動画出力に失敗しました。ブラウザがWebM出力に対応していない可能性があります。');
+    exportBtn.textContent = '📹 動画出力';
+    exportBtn.disabled = false;
+  }
+}
+
+function tick(now){
+  if(!playing) return; if(!lastPerf) lastPerf = now; const dt = (now - lastPerf)/1000; lastPerf = now;
+  playhead += dt; if(playhead > duration){ if(loopChk.checked){ playhead = playhead % duration; } else { playhead = duration; playing=false; playBtn.textContent='▶︎ 再生'; } }
+  syncFromTracks(); redrawTimelines(); requestAnimationFrame(tick);
+}
+
+// Slider manual control (preview)
+tSlider.addEventListener('input', ()=>{ playing=false; playBtn.textContent='▶︎ 再生'; drawLamp(ctx, +tSlider.value, +sSlider.value, +peakPosSlider.value, +lampLengthSlider.value); tVal.textContent=(+tSlider.value).toFixed(3); });
+sSlider.addEventListener('input', ()=>{ 
+  playing=false; 
+  playBtn.textContent='▶︎ 再生'; 
+  drawLamp(ctx, +tSlider.value, +sSlider.value, +peakPosSlider.value, +lampLengthSlider.value); 
+  
+  // σ値表示（長さによる調整情報も含む）
+  const lampLen = +lampLengthSlider.value;
+  const sigmaVal = +sSlider.value;
+  let lengthFactor = 1.0;
+  if (lampLen > 1.5) {
+    lengthFactor = Math.max(0.2, 0.8 / lampLen);
+  } else if (lampLen > 1.0) {
+    lengthFactor = 1.0 - (lampLen - 1.0) * 0.6;
+  }
+  
+  if (lengthFactor < 0.99) {
+    sVal.textContent = `${sigmaVal.toFixed(3)} (×${lengthFactor.toFixed(2)})`;
+  } else {
+    sVal.textContent = sigmaVal.toFixed(3);
+  }
+});
+peakPosSlider.addEventListener('input', ()=>{ playing=false; playBtn.textContent='▶︎ 再生'; drawLamp(ctx, +tSlider.value, +sSlider.value, +peakPosSlider.value, +lampLengthSlider.value); peakPosVal.textContent=(+peakPosSlider.value).toFixed(3); });
+lampLengthSlider.addEventListener('input', ()=>{ 
+  playing=false; 
+  playBtn.textContent='▶︎ 再生'; 
+  drawLamp(ctx, +tSlider.value, +sSlider.value, +peakPosSlider.value, +lampLengthSlider.value); 
+  
+  // 長さ情報を表示
+  const lampLen = +lampLengthSlider.value;
+  if (lampLen > 1.0) {
+    lampLengthVal.textContent = `${lampLen.toFixed(2)} (縮小)`;
+  } else {
+    lampLengthVal.textContent = lampLen.toFixed(2);
+  }
+  
+  // σ値表示も更新（長さ係数が変わるため）
+  const sigmaVal = +sSlider.value;
+  let lengthFactor = 1.0;
+  if (lampLen > 1.5) {
+    lengthFactor = Math.max(0.2, 0.8 / lampLen);
+  } else if (lampLen > 1.0) {
+    lengthFactor = 1.0 - (lampLen - 1.0) * 0.6;
+  }
+  
+  if (lengthFactor < 0.99) {
+    sVal.textContent = `${sigmaVal.toFixed(3)} (×${lengthFactor.toFixed(2)})`;
+  } else {
+    sVal.textContent = sigmaVal.toFixed(3);
+  }
+});
+
+// Playback controls
+playBtn.addEventListener('click', ()=>{
+  // 最後にいる場合は最初から再生
+  if(playhead >= duration && !playing) {
+    playhead = 0;
+  }
+  playing = !playing; 
+  playBtn.textContent = playing ? '⏸ 一時停止' : '▶︎ 再生'; 
+  lastPerf = 0; 
+  if(playing) requestAnimationFrame(tick);
+});
+
+exportBtn.addEventListener('click', exportVideo);
+durInput.addEventListener('change', ()=>{
+  duration = Math.max(0.5, Math.min(30, parseFloat(durInput.value)||4)); durInput.value = duration.toFixed(1);
+  // 末尾キーを新しい長さへ合わせる（先頭と末尾が存在する場合）
+  if(tTrack.keys.length>=2){ tTrack.keys[tTrack.keys.length-1].time = duration; }
+  if(sTrack.keys.length>=2){ sTrack.keys[sTrack.keys.length-1].time = duration; }
+  playhead = Math.min(playhead, duration); syncFromTracks(); redrawTimelines();
+});
+
+// キーボードイベント
+document.addEventListener('keydown', (e) => {
+  if(e.code === 'Space' && !e.repeat) {
+    e.preventDefault();
+    // 最後にいる場合は最初から再生
+    if(playhead >= duration && !playing) {
+      playhead = 0;
+    }
+    playing = !playing; 
+    playBtn.textContent = playing ? '⏸ 一時停止' : '▶︎ 再生'; 
+    lastPerf = 0; 
+    if(playing) requestAnimationFrame(tick);
+  } else if(e.code === 'Backspace' || e.code === 'Delete') {
+    // 選択された点を削除
+    let deleted = false;
+    deleted = tTrack.deleteSelectedPoints() || deleted;
+    deleted = sTrack.deleteSelectedPoints() || deleted;
+    
+    if(deleted) {
+      e.preventDefault(); // ブラウザのデフォルト動作を防ぐ
+    }
+  } else if(e.code === 'Escape') {
+    // 選択を解除
+    let cleared = false;
+    cleared = tTrack.clearSelection() || cleared;
+    cleared = sTrack.clearSelection() || cleared;
+    
+    if(cleared) {
+      e.preventDefault(); // ブラウザのデフォルト動作を防ぐ
+    }
+  }
+});
+
+// 初期描画
+syncFromTracks(); redrawTimelines();
+</script>
+</body>
+</html>
