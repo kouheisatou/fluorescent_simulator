@@ -141,6 +141,7 @@
       <!-- 再生制御 -->
       <div class="row" style="gap:10px; margin-bottom:12px">
         <button id="playBtn" title="スペースキーでも再生/停止">▶ 再生</button>
+        <button id="genBtn" title="内部でJSONを生成して読み込み">🧪 JSON生成→読込</button>
         <span class="value" id="timeVal">0.00s</span>
         <label for="duration">長さ(s)</label>
         <input id="duration" type="number" min="0.1" step="0.1" value="2.0" />
@@ -182,15 +183,18 @@
 
     // ===== Color Temperature function（指定実装） =====
     function colorTemperature(t) {
-      const phase1 = smoothstep(0.0, 0.3, t); // 透明→暗い赤
+      const phase1 = smoothstep(0.0, 0.3, t); // 黒っぽいグレー→暗い赤
       const phase2 = smoothstep(0.3, 0.6, t); // 暗い赤→オレンジ
-      const phase3 = smoothstep(0.6, 0.8, t); // オレンジ→黄
-      const phase4 = smoothstep(0.8, 1.0, t); // 黄→白
-      const red   = lerp(0, 255, phase1) + lerp(0, 60, phase2) + lerp(0, 40, phase3);
-      const green = lerp(0,   0, phase1) + lerp(0,120, phase2) + lerp(0,180, phase3) + lerp(0, 75, phase4);
-      const blue  = lerp(0,   0, phase1) + lerp(0,  0, phase2) + lerp(0, 60, phase3) + lerp(0,180, phase4);
-      const alpha = smoothstep(0.0, 0.4, t); // 暗部は透明
-      return [red, green, blue, alpha];
+      const phase3 = smoothstep(0.6, 0.8, t); // オレンジ→黄色
+      const phase4 = smoothstep(0.8, 1.0, t); // 黄色→白
+      
+      // 黒っぽいグレー(30,30,30) → 暗い赤(80,20,20) → オレンジ(255,120,0) → 黄色(255,255,0) → 白(255,255,255)
+      const red   = lerp(30, 80, phase1) + lerp(0, 175, phase2) + lerp(0, 0, phase3) + lerp(0, 0, phase4);
+      const green = lerp(30, 20, phase1) + lerp(0, 100, phase2) + lerp(0, 135, phase3) + lerp(0, 255, phase4);
+      const blue  = lerp(30, 20, phase1) + lerp(0, 0, phase2) + lerp(0, 0, phase3) + lerp(0, 255, phase4);
+      
+      // アルファ値は常に1.0（透明なし）
+      return [red, green, blue, 1.0];
     }
 
     // ===== Elements =====
@@ -207,6 +211,7 @@
 
 
     const playBtn = document.getElementById('playBtn');
+    const genBtn = document.getElementById('genBtn');
     const timeSlider = document.getElementById('timeSlider');
     const timeVal = document.getElementById('timeVal');
     const durationInput = document.getElementById('duration');
@@ -915,7 +920,7 @@
     }
     async function checkFlash(){
       const maxY = computeMaxCurveValue();
-      const above = maxY > 0.80;
+      const above = maxY > 0.7;
       if (!wasAboveFlash && above){
         await ensureAudio();
         playFlash();
@@ -1394,6 +1399,287 @@
       a.remove();
       setTimeout(()=>URL.revokeObjectURL(url), 1000);
     }
+
+    // ===== 内部JSON生成器 =====
+    function mulberry32(seed){
+      let t = seed >>> 0;
+      return function(){
+        t += 0x6D2B79F5;
+        let r = Math.imul(t ^ (t >>> 15), 1 | t);
+        r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+        return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+    function clamp01(v){ return Math.max(0, Math.min(1, v)); }
+    
+    // ガウス分布（正規分布）の乱数生成（Box-Muller変換）
+    function gaussianRandom(mean, stdDev, rndFunc){
+      let u1, u2;
+      do {
+        u1 = rndFunc();
+        u2 = rndFunc();
+      } while (u1 === 0); // u1が0の場合は再生成
+      
+      // Box-Muller変換
+      const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+      return mean + z0 * stdDev;
+    }
+    
+    // ガウス分布で範囲制限された乱数生成
+    function gaussianRange(mean, stdDev, min, max, rndFunc){
+      let result;
+      do {
+        result = gaussianRandom(mean, stdDev, rndFunc);
+      } while (result < min || result > max);
+      return result;
+    }
+    function generateFluorescentTimeline({
+      version = 1,
+      duration = 2.0,
+      controlPoints,
+      seed = 42,
+      params = {}
+    }){
+      const rnd = mulberry32(seed);
+      const p = {
+        baseGain: 0.85,
+        spread: 0.20,
+        gainPow: 1.25,
+        midRange: [0.25, 0.65],
+        peakRange: [0.95, 1.0],
+        zeroRange: [0.00, 0.06],
+        dtRangeMs: [50, 85],
+        decayRate: 0.018,
+        noise: 0.015,
+        // startTime を相対レンジでランダム化（durationに比例）
+        startTimeRangeRel: [0.45, 0.65], // 例: duration=2s → 0.90s〜1.30s（未使用時のフォールバック）
+        // 絶対時間での開始レンジ（優先）
+        startTimeAbsRange: [0.96, 1.06], // 1パルス目は1.0秒付近から
+        // 追加の全体ランダム性
+        globalJitterMs: 10,      // 各イベントの微小ジッタ
+        // 全体構成のランダム性
+        // 1パルス目までの時間をランダム化
+        firstPulseDelayRange: [0.85, 1.15], // 1パルス目開始時刻の範囲
+        // 安定までの時間をランダム化
+        settleTimeRangeRel: [0.15, 0.35], // durationに対する比率
+        // 安定までのパルス回数をランダム化
+        pulseCountRange: [3, 8], // 安定までのパルス数
+        // 安定後の時間を確保
+        stableTimeAfterSettle: 0.5, // 安定後の時間（秒）
+        // パルス間隔のランダム性強化（ガウス分布）
+        pulseIntervalRange: [40, 120], // パルス間隔（ms）
+        pulseIntervalStdDev: 35,       // パルス間隔の標準偏差（ms）- 分散を大きく
+        burstIntervalRange: [80, 180], // バースト間隔（ms）
+        burstIntervalStdDev: 50,       // バースト間隔の標準偏差（ms）- 分散を大きく
+        // パルス形状（鋭い立ち上がり→短いピーク→即減衰）
+        pulseRiseMsRange: [8, 12],   // 立ち上がり（ランダム性抑制）
+        pulseHoldMsRange: [2, 4],    // ごく短いホールド（ランダム性抑制）
+        pulseFallMsRange: [35, 45],  // 減衰（ランダム性抑制）
+        pulseInterGapMsRange: [24, 70], // パルス間ギャップ
+        pulsesPerBurstRange: [1, 3], // 1塊のパルス数
+        burstGapMsRange: [60, 140],  // 次の塊まで
+        settleBufferMs: 100,
+        useSampleIdProfiles: true,
+        // レア長溜め（極稀に長い待機を挿入）
+        rareLongTameProb: 0.06,             // 6% で長溜めを発生
+        rareLongTameMsRange: [600, 1800]    // 0.6〜1.8秒の追加待機
+      };
+      Object.assign(p, params);
+      const gain = (x) => clamp01(p.baseGain + p.spread * Math.pow(1 - x, p.gainPow));
+      const rBetween = (a,b)=> a + (b-a) * rnd();
+      const ms = (m)=> m/1000;
+
+      // id別プロファイル（fluorescent_timeline_sample.json を解析）
+      // Peak @t≈1.085: 101:0.90, 102:0.95, 103:0.88, 104:0.82 → maxで正規化
+      const peakWeights = new Map([[101, 0.90/0.95],[102,1.0],[103,0.88/0.95],[104,0.82/0.95]]);
+      // Mid @t≈1.03: 101:0.24, 102:0.36, 103:0.12, 104:0.05 → maxで正規化
+      const midWeights  = new Map([[101, 0.24/0.36],[102,1.0],[103,0.12/0.36],[104,0.05/0.36]]);
+      // Near-zero @t≈1.402 等: 101:0.03, 102:0.06, 103:0.02, 104:0.01 → maxで正規化
+      const zeroWeights = new Map([[101, 0.03/0.06],[102,1.0],[103,0.02/0.06],[104,0.01/0.06]]);
+      function idWeight(id, phase){
+        if (!p.useSampleIdProfiles) return 1.0;
+        if (phase === 'peak') return peakWeights.get(id) ?? 1.0;
+        if (phase === 'mid')  return midWeights.get(id)  ?? 1.0;
+        if (phase === 'zero') return zeroWeights.get(id) ?? 1.0;
+        return 1.0;
+      }
+
+      // エネルギー依存の空間成形: 低エネルギー時は中央を抑え、両端のみ赤く見せる
+      function energyShapeFactor(x /*0..0.5*/, baseAmp){
+        if (baseAmp < 0.28){
+          // x=0（端）→1（中心）相当で中心側を大きく減衰
+          const k = Math.min(1, Math.max(0, x / 0.5));
+          return 1 - 0.75 * k; // 中央で最大-75%
+        }
+        return 1.0;
+      }
+      // 高エネルギー時の色温度確保: 全体が光る場合は黄〜白帯に持ち上げる
+      function liftHighTempFloor(y, baseAmp){
+        if (baseAmp > 0.82) return Math.max(y, 0.62);
+        if (baseAmp > 0.70) return Math.max(y, 0.50);
+        return y;
+      }
+
+      const keyframesGen = [];
+      keyframesGen.push({ t: 0.0, points: controlPoints.map(cp=>({ id: cp.id, y: 0.0 })) });
+      // 初回溜め（開始時刻）をランダム化：絶対レンジがあれば優先
+      const hasAbs = Array.isArray(p.startTimeAbsRange) && p.startTimeAbsRange.length===2;
+      const tStartCandidate = hasAbs ? rBetween(p.startTimeAbsRange[0], p.startTimeAbsRange[1])
+                                     : duration * rBetween(p.startTimeRangeRel[0], p.startTimeRangeRel[1]);
+      const tStart = clamp(tStartCandidate, 0.05, Math.max(0.2, duration - 0.2));
+      
+      // 全体構成のランダム化
+      const firstPulseTime = rBetween(p.firstPulseDelayRange[0], p.firstPulseDelayRange[1]);
+      const settleTime = duration * rBetween(p.settleTimeRangeRel[0], p.settleTimeRangeRel[1]);
+      const targetPulseCount = Math.floor(rBetween(p.pulseCountRange[0], p.pulseCountRange[1] + 1));
+      
+      // 動的にdurationを計算（パルス生成時間 + 安定後0.5秒）
+      let estimatedDuration = 0;
+      
+      let t = tStart;
+      let cycle = 0;
+      const settleBuffer = ms(p.settleBufferMs);
+      const jitter = ()=> ms(rBetween(-p.globalJitterMs, p.globalJitterMs));
+      const maybeRareLongTame = ()=> (rnd() < p.rareLongTameProb ? ms(rBetween(p.rareLongTameMsRange[0], p.rareLongTameMsRange[1])) : 0);
+
+      // 1パルス（rise→hold→fall）のキーフレーム群を追加
+      function addPulseAt(timeBase, baseAmp, cycleScale, isLast){
+        // 最後のパルス専用の上書き設定（存在すれば優先）
+        const riseRange = isLast && p.lastPulse && Array.isArray(p.lastPulse.pulseRiseMsRange) ? p.lastPulse.pulseRiseMsRange : p.pulseRiseMsRange;
+        const holdRange = isLast && p.lastPulse && Array.isArray(p.lastPulse.pulseHoldMsRange) ? p.lastPulse.pulseHoldMsRange : p.pulseHoldMsRange;
+        const fallRange = isLast && p.lastPulse && Array.isArray(p.lastPulse.pulseFallMsRange) ? p.lastPulse.pulseFallMsRange : p.pulseFallMsRange;
+        const peakScale = isLast && p.lastPulse && typeof p.lastPulse.peakScale === 'number' ? p.lastPulse.peakScale : 1.0;
+        const zeroClamp = isLast && p.lastPulse && typeof p.lastPulse.zeroClamp === 'number' ? p.lastPulse.zeroClamp : null;
+
+        const rise = ms(rBetween(riseRange[0], riseRange[1]));
+        const hold = ms(rBetween(holdRange[0], holdRange[1]));
+        const fall = ms(rBetween(fallRange[0], fallRange[1]));
+        const t0 = timeBase;
+        const t1 = t0 + rise;            // 立ち上がり終端（中〜高の間）
+        const t2 = t1 + hold;            // ピーク維持（短い）
+        const t3 = t2 + fall;            // 近ゼロへ減衰（最後はスキップ可能）
+
+        // 立ち上がり途中の中間点（プロファイルmid）
+        const yMid = clamp01(baseAmp * (0.35 + 0.25 * rnd()));
+        const mkPoints = (amp, phase)=> controlPoints.map(cp=>{
+          const wId = idWeight(cp.id, phase);
+          const shaped = (amp * peakScale) * cycleScale * wId * gain(cp.x) * energyShapeFactor(cp.x, amp * peakScale);
+          let y = clamp01(shaped + rBetween(-p.noise, p.noise));
+          y = liftHighTempFloor(y, amp);
+          return { id: cp.id, y };
+        });
+        // t1: 立ち上がり終端（中間強度）
+        keyframesGen.push({ t: t1, points: mkPoints(yMid, 'mid') });
+        // t2: ピーク
+        // 最後のパルスは全xで1.0固定
+        if (isLast) {
+          keyframesGen.push({ t: t2, points: controlPoints.map(cp=>({ id: cp.id, y: 1.0 })) });
+        } else {
+          keyframesGen.push({ t: t2, points: mkPoints(baseAmp, 'peak') });
+        }
+        // t3: 近ゼロ
+        if (!isLast) {
+          const yZeroBase = rBetween(p.zeroRange[0], p.zeroRange[1]);
+          const zeroPts = controlPoints.map(cp=>{
+            const zMul = idWeight(cp.id, 'zero');
+            const shaped = yZeroBase * cycleScale * zMul * energyShapeFactor(cp.x, yZeroBase);
+            let y = clamp01(shaped + rBetween(-p.noise*0.5, p.noise*0.5));
+            if (zeroClamp != null) y = Math.min(y, zeroClamp);
+            return { id: cp.id, y };
+          });
+          keyframesGen.push({ t: t3, points: zeroPts });
+          return t3;
+        } else {
+          // 最後のパルスは暗くしない: 以降の最終状態は1.0へ統一
+          return t2;
+        }
+      }
+
+      // 1パルス目まで待機
+      if (t < firstPulseTime) {
+        t = firstPulseTime + maybeRareLongTame();
+      }
+
+      // 安定までのパルス生成（回数制御）
+      let pulseCount = 0;
+      while (pulseCount < targetPulseCount && t + settleBuffer < duration){
+        const decay = Math.max(0.6, 1 - p.decayRate * cycle);
+        // サイクルごとの強度スケール（±10%）
+        const cycleScale = 0.90 + 0.20 * rnd();
+        // バースト内のパルス数
+        const nPulses = Math.max(1, Math.floor(rBetween(p.pulsesPerBurstRange[0], p.pulsesPerBurstRange[1] + 1)));
+        for (let i=0;i<nPulses;i++){
+          const isLastPulse = (pulseCount + i + 1) >= targetPulseCount; // これで全体の最後のパルスを検出
+          const peakAmp = rBetween(p.peakRange[0], p.peakRange[1]) * decay;
+          // パルス追加（鋭い→短い→即減衰）
+          const tEnd = addPulseAt(t, peakAmp, cycleScale, isLastPulse);
+          // ガウス分布でパルス間隔を生成
+          const pulseInterval = gaussianRange(
+            (p.pulseIntervalRange[0] + p.pulseIntervalRange[1]) / 2, // 平均
+            p.pulseIntervalStdDev,                                    // 標準偏差
+            p.pulseIntervalRange[0],                                  // 最小値
+            p.pulseIntervalRange[1],                                  // 最大値
+            rnd
+          );
+          t = tEnd + ms(pulseInterval) + jitter();
+          if (t + settleBuffer >= duration) break;
+          pulseCount++;
+        }
+        // 次の塊まで（ガウス分布でバースト間隔を生成）
+        const burstInterval = gaussianRange(
+          (p.burstIntervalRange[0] + p.burstIntervalRange[1]) / 2, // 平均
+          p.burstIntervalStdDev,                                    // 標準偏差
+          p.burstIntervalRange[0],                                  // 最小値
+          p.burstIntervalRange[1],                                  // 最大値
+          rnd
+        );
+        t += ms(burstInterval) + jitter() + maybeRareLongTame();
+        cycle++;
+      }
+
+      // 最終状態に入る直前で暗転している場合があるため、直前KFを持ち上げ
+      if (keyframesGen.length > 0) {
+        const lastIdx = keyframesGen.length - 1;
+        const lastKF = keyframesGen[lastIdx];
+        const isDark = lastKF.points && lastKF.points.some(p=> (p?.y ?? 0) < 0.95);
+        if (isDark) {
+          lastKF.points = controlPoints.map(cp=>({ id: cp.id, y: 1.0 }));
+        }
+      }
+
+      // 最終状態（安定後0.5秒）
+      const finalDuration = t + p.stableTimeAfterSettle;
+      keyframesGen.push({ t: finalDuration, points: controlPoints.map(cp=>({ id: cp.id, y: 1.0 })) });
+      
+      return { version, duration: finalDuration, controlPoints, keyframes: keyframesGen };
+    }
+
+    // 生成→読み込み ボタン
+    genBtn && genBtn.addEventListener('click', ()=>{
+      // サンプルに近い制御点配置（xは左半分 0..0.5）
+      const cps = [
+        { id: 101, x: 0.02 },
+        { id: 102, x: 0.10 },
+        { id: 103, x: 0.20 },
+        { id: 104, x: 0.50 },
+      ];
+      const seed = (Date.now() & 0xffffffff) >>> 0;
+      const timelineGen = generateFluorescentTimeline({
+        duration: duration,
+        controlPoints: cps,
+        seed
+      });
+
+      // 内部形式（setKeyframesFromSpec）へ変換して反映
+      const spec = timelineGen.keyframes.map(kf=>{
+        const map = new Map(kf.points.map(p=>[p.id, p.y]));
+        const pts = cps.map(cp=>({ id: cp.id, x: cp.x, y: clamp01(map.get(cp.id) ?? 0) }));
+        return { t: kf.t, pts };
+      });
+      setKeyframesFromSpec(spec, timelineGen.duration);
+      // 再生開始（任意）
+      setPlaying(true);
+    });
 
     function importJSONFile(file){
       const reader = new FileReader();
