@@ -117,16 +117,9 @@
   <div class="wrap">
     <h1>蛍光灯 点灯シミュレータ</h1>
     
-    <!-- 上部セクション：明度とカラーバー -->
+    <!-- 上部セクション：カラーバー -->
     <div class="panel" style="margin-bottom: 16px;">
-      <h2 style="font-size:14px;margin:0 0 12px;color:#eaeaea;font-weight:600">明度とカラーバー</h2>
-      
-      <!-- 明度 -->
-      <div class="row" style="margin-bottom:12px">
-        <label for="brightness">明度</label>
-        <input id="brightness" type="range" min="0" max="200" value="100" step="1" />
-        <span class="value" id="bVal">1.00</span>
-    </div>
+      <h2 style="font-size:14px;margin:0 0 12px;color:#eaeaea;font-weight:600">カラーバー</h2>
 
       <!-- カラーバー（基礎関数の可視化） -->
       <canvas id="bar" height="120" aria-label="カラーバー"></canvas>
@@ -176,7 +169,7 @@
       <canvas id="curve" height="200" aria-label="色温度カーブエディタ"></canvas>
       <div class="axis" aria-hidden="true" style="margin-top:6px">x: 0 → 1（ランプ左→右） / y: 0（暗）→ 1（白）
         ・左半分(0〜0.5)だけ編集可能。右半分は自動ミラー。
-        ・点ドラッグ = 移動 ・点をクリックして離す = 削除
+        ・点ドラッグ = 移動
         ・常に現在の再生ヘッド位置の色温度カーブと制御点を表示（リアルタイム更新）
         ・キーフレーム間は制御点の位置を線形補完
     </div>
@@ -222,8 +215,7 @@
     const curve = document.getElementById('curve');
     const timeline = document.getElementById('timeline');
 
-    const brightness = document.getElementById('brightness');
-    const bVal = document.getElementById('bVal');
+    
     const panel = document.querySelector('.panel');
 
 
@@ -555,13 +547,12 @@
       const w = bar.width, h = bar.height;
       const img = ctx.createImageData(w, h);
       const data = img.data;
-      const b = Number(brightness.value) / 100;
       for (let x = 0; x < w; x++) {
         const t = x / (w - 1);
         const [r0, g0, b0, a0] = colorTemperature(t);
-        const r  = Math.round(clamp(r0 * b, 0, 255));
-        const g  = Math.round(clamp(g0 * b, 0, 255));
-        const bb = Math.round(clamp(b0 * b, 0, 255));
+        const r  = Math.round(clamp(r0, 0, 255));
+        const g  = Math.round(clamp(g0, 0, 255));
+        const bb = Math.round(clamp(b0, 0, 255));
         const a  = Math.round(clamp(a0 * 255, 0, 255));
         for (let y = 0; y < h; y++) {
           const idx = (y * w + x) * 4;
@@ -624,16 +615,15 @@
       const octx = off.getContext('2d');
       const inner = octx.createImageData(adjustedWidth, adjustedHeight);
       const data = inner.data;
-      const bright = Number(brightness.value) / 100;
 
       for (let x = 0; x < adjustedWidth; x++) {
         const xNorm = x / (adjustedWidth - 1); // 0..1 左→右
         // 時間補完された値を使用（再生中でなくても）
         const tt = getCurrentCurveValue(xNorm);
         const [r0,g0,b0,a0] = colorTemperature(tt);
-        const r = Math.round(clamp(r0 * bright, 0, 255));
-        const g = Math.round(clamp(g0 * bright, 0, 255));
-        const b = Math.round(clamp(b0 * bright, 0, 255));
+        const r = Math.round(clamp(r0, 0, 255));
+        const g = Math.round(clamp(g0, 0, 255));
+        const b = Math.round(clamp(b0, 0, 255));
         const a = Math.round(clamp(a0 * 255, 0, 255));
         for (let y = 0; y < adjustedHeight; y++){
           const idx = (y * adjustedWidth + x) * 4;
@@ -839,17 +829,9 @@
       renderCurve(cssW);
       renderTimeline(cssW);
     }
-
-    // ===== Brightness =====
-    brightness.addEventListener('input', () => {
-      bVal.textContent = (Number(brightness.value) / 100).toFixed(2);
-      const cssW = getCssWidth();
-      renderBar(cssW);
-      renderLamp(cssW);
-    });
-
-
-
+    
+    
+    
     // ===== Time controls =====
     function syncTimeUI(){
       time = clamp(time, 0, duration);
@@ -1123,7 +1105,8 @@
       for (const p of points){
         const leftX  = gx + Math.round(p.x*(gw-1)) + 0.5;
         const rightX = gx + Math.round((1 - p.x)*(gw-1)) + 0.5;
-        const yM    = gy + Math.round((1 - p.y)*(gh-1)) + 0.5;
+        const curveY = getCurrentCurveValue(p.x);
+        const yM    = gy + Math.round((1 - curveY)*(gh-1)) + 0.5;
         let dx = leftX - cx, dy = yM - cy; let d2 = dx*dx + dy*dy;
         if (d2 < r*r && d2 < best){ best = d2; found = { id: p.id }; }
         dx = rightX - cx; dy = yM - cy; d2 = dx*dx + dy*dy;
@@ -1150,8 +1133,16 @@
         drag = { id: target.id, startX: x, startY: y, moved: false };
         curve.style.cursor = 'grabbing';
   } else {
-        drag = { id: null, startX: x, startY: y, moved: false };
-        curve.style.cursor = 'crosshair';
+        // 空所クリック: 点を即時作成し、ドラッグ対象にする
+        const {x: xn, y: yn} = cssToNorm(x, y);
+        const s = xn <= 0.5 ? xn : 1 - xn;
+        const newPoint = { id: nextPointId++, x: clamp(s, 0, 0.5), y: yn };
+        points.push(newPoint);
+        sortPoints(points);
+        updateSelectedKFPointsFromEditor();
+        drag = { id: newPoint.id, startX: x, startY: y, moved: false };
+        curve.style.cursor = 'grabbing';
+        render();
       }
     });
 
@@ -1172,11 +1163,15 @@
         if (p){
           const {x: xn, y: yn} = cssToNorm(x, y);
           const s = xn <= 0.5 ? xn : 1 - xn; // 左半分へ折り返し
-          p.x = clamp(s, 0, 0.5);
-          p.y = yn;
-          sortPoints(points);
-          updateSelectedKFPointsFromEditor();
-          render();
+          const newX = clamp(s, 0, 0.5);
+          const newY = yn;
+          if (newX !== p.x || newY !== p.y){
+            p.x = newX;
+            p.y = newY;
+            sortPoints(points);
+            updateSelectedKFPointsFromEditor();
+            render();
+          }
         }
       }
     });
@@ -1186,22 +1181,8 @@
       const x = e.clientX - rect.left; const y = e.clientY - rect.top;
       if (!drag){ return; }
 
-      if (drag.id){
-        if (!drag.moved){
-          const idx = points.findIndex(pp=>pp.id===drag.id);
-          if (idx !== -1){ points.splice(idx,1); sortPoints(points); updateSelectedKFPointsFromEditor(); render(); }
-        }
-      } else {
-        if (!drag.moved){
-          const {x: xn, y: yn} = cssToNorm(x, y);
-          const s = xn <= 0.5 ? xn : 1 - xn;
-          points.push({ id: nextPointId++, x: clamp(s, 0, 0.5), y: yn });
-          sortPoints(points);
-          updateSelectedKFPointsFromEditor();
-          render();
-        }
-      }
-      drag = null; curve.style.cursor = 'crosshair';
+      // pointerdownで必要に応じて作成済みのため、ここでは追加・削除のいずれも行わない
+       drag = null; curve.style.cursor = 'crosshair';
     });
 
     
@@ -1360,12 +1341,9 @@
     }
 
     (function init(){
-      bVal.textContent = (Number(brightness.value) / 100).toFixed(2);
       duration = Number(durationInput.value) || 2.0;
       loopPlay = !!loopChk.checked;
       initDefaultKeyframes();
-      // プリセットを自動的に読み込み
-      presetThreeTriesThenStable();
       renderAll();
       syncTimeUI();
     })();
