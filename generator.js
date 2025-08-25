@@ -95,8 +95,13 @@ export function generateFluorescentTimeline({
     const hold = ms(rBetween(p.pulseHoldMsRange[0], p.pulseHoldMsRange[1]));
     const fall = ms(rBetween(p.pulseFallMsRange[0], p.pulseFallMsRange[1]));
     const t0 = timeBase; const t1 = t0 + rise; const t2 = t1 + hold; const t3 = t2 + fall;
-    // 時間制約でこれ以降パルスを入れられない場合も「最後」として扱う
-    const isTimeBoundLast = (t3 + settleBuffer) >= duration;
+    // 時間制約でこれ以降パルスを入れられない場合も「最後」として扱う。
+    // ここでは「次パルスを最短で入れるのに必要な時間」を考慮して判定する。
+    const minNextPulseCoreMs = (p.pulseRiseMsRange[0] + p.pulseHoldMsRange[0] + p.pulseFallMsRange[0]);
+    const minNextIntervalMs  = (p.pulseIntervalRange ? p.pulseIntervalRange[0] : 0);
+    const maxJitterMs = 10; // jitter() は ±10ms
+    const minNextTotal = ms(minNextPulseCoreMs + minNextIntervalMs + maxJitterMs);
+    const isTimeBoundLast = (t3 + minNextTotal + settleBuffer) >= duration;
     const treatAsLast = isLast || isTimeBoundLast;
     const yMid = clamp01(baseAmp * (0.35 + 0.25 * rnd()));
     const mkPoints = (amp, phase)=> controlPoints.map(cp=>{
@@ -146,7 +151,8 @@ export function generateFluorescentTimeline({
   }
 
   const finalDuration = t + p.stableTimeAfterSettle;
-  keyframesGen.push({ t: finalDuration, points: controlPoints.map(cp=>({ id: cp.id, y: 1.0 })) });
+  const onesTail = controlPoints.map(cp=>({ id: cp.id, y: 1.0 }));
+  keyframesGen.push({ t: finalDuration, points: onesTail });
   return { version, duration: finalDuration, controlPoints, keyframes: keyframesGen };
 }
 
