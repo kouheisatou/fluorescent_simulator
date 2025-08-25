@@ -812,9 +812,165 @@
       renderCurve(cssW);
       renderTimeline(cssW);
     }
-    
-    
-    
+
+    // ===== Audio: flash.wav trigger on threshold =====
+    let audioCtx = null;
+    let flashBuffer = null;
+    let audioLoaded = false;
+    let htmlAudio = null; // fallback element
+    let audioInitialized = false;
+    // Hum (buzz) nodes
+    let humGain = null;
+    let humOsc1 = null;
+    let humOsc2 = null;
+    let humLfo = null;
+    let humLfoGain = null;
+    let isHumRunning = false;
+    const HUM_BASE_GAIN = 0.025; // 最大時の基準ゲイン
+    let humAvgEma = 0.0;         // 色温度の指数移動平均
+    const HUM_EMA_ALPHA = 0.2;   // 応答係数（0..1）
+    async function ensureAudio(){
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        if (!audioLoaded){
+          const isFile = location.protocol === 'file:';
+          if (!isFile){
+            try {
+              const res = await fetch('flash.wav');
+              if (!res.ok) throw new Error('fetch failed');
+              const arr = await res.arrayBuffer();
+              flashBuffer = await audioCtx.decodeAudioData(arr);
+              audioLoaded = true;
+            } catch {}
+          }
+          if (!audioLoaded){
+            // Fallback: HTMLAudioElement
+            if (!htmlAudio){
+              htmlAudio = new Audio('flash.wav');
+              htmlAudio.preload = 'auto';
+            }
+          }
+        }
+      } catch {}
+    }
+    function playFlash(){
+      // pick a wider random range and random start offset
+      const rate = 0.9 + Math.random()*0.20; // 0.85x..1.15x
+      const offset = Math.random() * 0.02;    // up to 20ms offset
+      // Prefer WebAudio if buffer available
+      if (audioCtx && flashBuffer){
+        const src = audioCtx.createBufferSource();
+        src.buffer = flashBuffer;
+        // use both detune (cents) and playbackRate for broader device support
+        if (typeof src.detune === 'object' || typeof src.detune === 'number'){
+          try { src.detune.value = (Math.random()*200 - 100); } catch {}
+        }
+        try { src.playbackRate.value = rate; } catch {}
+        src.connect(audioCtx.destination);
+        try { src.start(0, offset); } catch {}
+        return;
+      }
+      // Fallback: HTMLAudioElement (clone to allow overlap)
+      if (htmlAudio){
+        try {
+          const a = htmlAudio.cloneNode(true);
+          // ensure pitch follows playbackRate on all browsers
+          try { a.preservesPitch = false; } catch {}
+          try { a.mozPreservesPitch = false; } catch {}
+          try { a.webkitPreservesPitch = false; } catch {}
+          a.playbackRate = rate;
+          // apply small start offset when possible
+          try { a.currentTime = offset; } catch {}
+          a.play().catch(()=>{});
+        } catch {}
+      }
+    }
+    let wasAboveFlash = false;
+    function computeMaxCurveValue(){
+      let maxY = 0;
+      const S = 32;
+      for (let i=0;i<S;i++){
+        const x = i/(S-1);
+        const y = getCurrentCurveValue(x);
+        if (y > maxY) maxY = y;
+      }
+      return maxY;
+    }
+    function computeAvgCurveValue(){
+      let sumY = 0;
+      const S = 32;
+      for (let i=0;i<S;i++){
+        const x = i/(S-1);
+        sumY += getCurrentCurveValue(x);
+      }
+      return sumY / S;
+    }
+    function updateHumDynamics(){
+      if (!audioCtx || !humGain) return;
+      const avg = computeAvgCurveValue();
+      humAvgEma = HUM_EMA_ALPHA * avg + (1 - HUM_EMA_ALPHA) * humAvgEma;
+      const target = Math.max(0, Math.min(1, 1 - humAvgEma)) * HUM_BASE_GAIN;
+      try { humGain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.05); } catch {}
+    }
+    async function checkFlash(){
+      const maxY = computeMaxCurveValue();
+      const above = maxY > 0.80;
+      if (!wasAboveFlash && above){
+        await ensureAudio();
+        playFlash();
+      }
+      wasAboveFlash = above;
+    }
+
+    // Continuous hum while playing
+    async function startHum(){
+      await ensureAudio();
+      if (!audioCtx) return;
+      if (isHumRunning) return;
+      humGain = audioCtx.createGain();
+      humGain.gain.value = HUM_BASE_GAIN; // 初期値
+      humGain.connect(audioCtx.destination);
+      // base hum: 100 Hz sine + 200 Hz sine (subtle)
+      humOsc1 = audioCtx.createOscillator();
+      humOsc1.type = 'sine';
+      humOsc1.frequency.value = 100;
+      humOsc1.connect(humGain);
+      humOsc2 = audioCtx.createOscillator();
+      humOsc2.type = 'sine';
+      humOsc2.frequency.value = 200;
+      humOsc2.connect(humGain);
+      try { humOsc1.start(); } catch {}
+      try { humOsc2.start(); } catch {}
+      isHumRunning = true;
+    }
+    function stopHum(){
+      if (!audioCtx) return;
+      if (!isHumRunning) return;
+      // fade out
+      try {
+        const now = audioCtx.currentTime;
+        humGain.gain.setTargetAtTime(0.0, now, 0.15);
+      } catch {}
+      const toStop = [humOsc1, humOsc2];
+      setTimeout(()=>{
+        for (const n of toStop){ try { n && n.stop(); } catch {} }
+        humOsc1 = humOsc2 = null;
+        if (humGain){ try { humGain.disconnect(); } catch {} humGain = null; }
+        if (humLfoGain){ try { humLfoGain.disconnect(); } catch {} humLfoGain = null; }
+        isHumRunning = false;
+      }, 400);
+    }
+
+    // Initialize audio on first user gesture to satisfy autoplay policies
+    function initAudioOnGesture(){
+      if (audioInitialized) return;
+      audioInitialized = true;
+      ensureAudio();
+    }
+    window.addEventListener('pointerdown', initAudioOnGesture, { once: true });
+    window.addEventListener('keydown', (e)=>{ if (e.code === 'Space' || e.key === 'Enter') initAudioOnGesture(); }, { once: true });
+
     // ===== Time controls =====
     function syncTimeUI(){
       time = clamp(time, 0, duration);
@@ -823,6 +979,8 @@
       syncEditorPointsToCurrentTime();
       renderLamp(getCssWidth());
       renderTimeline(getCssWidth());
+      checkFlash();
+      updateHumDynamics();
     }
     durationInput.addEventListener('change', ()=>{
       duration = Math.max(0.1, Number(durationInput.value));
@@ -861,7 +1019,12 @@
         if (time >= duration) {
           time = 0;
         }
+        // ensure audio and start hum while playing
+        startHum();
         requestAnimationFrame((ts)=>{ lastTS = ts; requestAnimationFrame(tick); });
+      } else {
+        // stop hum when paused
+        stopHum();
       }
     }
     playBtn.addEventListener('click', ()=> setPlaying(!playing));
