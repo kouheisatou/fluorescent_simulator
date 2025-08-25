@@ -83,7 +83,7 @@
       color: #aaa; 
       line-height: 1.4;
     }
-    #curve { cursor: crosshair; }
+    #curve { cursor: default; pointer-events: none; }
     button { 
       background:#1c1c1c; 
       color:#e7e7e7; 
@@ -147,32 +147,18 @@
         <label style="display:flex;align-items:center;gap:6px"><input id="loop" type="checkbox" /> ループ</label>
       </div>
       
-      <!-- キーフレーム操作 -->
-      <div class="row" style="gap:10px; margin-bottom:12px">
-        <button id="addKF">キーフレーム追加</button>
-        <button id="delKF">キーフレーム削除</button>
-        <button id="prevKF">前のキーフレーム</button>
-        <button id="nextKF">次のキーフレーム</button>
-      </div>
       
-      <!-- データ操作 -->
-      <div class="row" style="gap:10px; margin-bottom:12px">
-        <button id="exportJSON" title="現在のキーフレームをJSONで書き出し">JSON書き出し</button>
-        <label for="importJSON" style="display:inline-flex;align-items:center;gap:6px;border:1px solid #333;border-radius:8px;padding:8px 12px;cursor:pointer;background:#1c1c1c;font-size:13px;">JSON読み込み<input id="importJSON" type="file" accept=".json" style="display:none"></label>
-      </div>
       
       <canvas id="timeline" height="64" aria-label="タイムライン"></canvas>
-      <div class="axis" aria-hidden="true" style="margin-top:6px">キーフレームをドラッグで移動 / キーフレームクリックで選択・再生ヘッド移動 / 再生ヘッドをドラッグで移動 / 空白部クリックで再生ヘッド移動 / 左右矢印キーで0.01秒移動 / シフト+左右矢印キーで0.1秒移動 / 再生中はキーフレーム選択解除</div>
+      <div class="axis" aria-hidden="true" style="margin-top:6px">再生ヘッドをドラッグで移動 / 空白部クリックで再生ヘッド移動 / 左右矢印キーで0.01秒移動 / シフト+左右矢印キーで0.1秒移動</div>
 
       <!-- 曲線エディタ（左右対称。編集は左半分のみ） -->
-      <h2 style="font-size:14px;margin:24px 0 12px;color:#eaeaea;font-weight:600">色温度カーブ（左右対称・左半分のみ編集）</h2>
+      <h2 style="font-size:14px;margin:24px 0 12px;color:#eaeaea;font-weight:600">色温度カーブ（表示のみ）</h2>
       <canvas id="curve" height="200" aria-label="色温度カーブエディタ"></canvas>
       <div class="axis" aria-hidden="true" style="margin-top:6px">x: 0 → 1（ランプ左→右） / y: 0（暗）→ 1（白）
-        ・左半分(0〜0.5)だけ編集可能。右半分は自動ミラー。
-        ・点ドラッグ = 移動
-        ・常に現在の再生ヘッド位置の色温度カーブと制御点を表示（リアルタイム更新）
-        ・キーフレーム間は制御点の位置を線形補完
-    </div>
+        ・表示専用。JSONをウィンドウへドラッグ&ドロップで読み込み可能。
+        ・常に現在の再生ヘッド位置の色温度カーブを表示（リアルタイム更新）
+      </div>
     </div>
     </div>
 
@@ -225,10 +211,7 @@
     const timeVal = document.getElementById('timeVal');
     const durationInput = document.getElementById('duration');
     const loopChk = document.getElementById('loop');
-    const addKFBtn = document.getElementById('addKF');
-    const delKFBtn = document.getElementById('delKF');
-    const prevKFBtn = document.getElementById('prevKF');
-    const nextKFBtn = document.getElementById('nextKF');
+    
 
     // ===== Curve model（左半分のみ：0..0.5 → 0..1） =====
     let points = [ { id: 1, x: 0.0, y: 0.0 }, { id: 2, x: 0.5, y: 0.0 } ];
@@ -911,17 +894,7 @@
     function tToX(t){ const L=timeline._layout; const {gx,gw}=L; return gx + Math.round((t/duration)*(gw-1)) + 0.5; }
     function xToT(xCSS){ const L=timeline._layout; const {dpr,gx,gw}=L; const xd=xCSS*dpr; const tn=clamp((xd-gx)/(gw-1),0,1); return tn*duration; }
 
-    function hitTestKF(xCSS, yCSS){
-      const L = timeline._layout; if(!L) return -1; const {dpr, gy, gh} = L;
-      const cx = xCSS * dpr, cy = yCSS * dpr;
-      let best = 1e9, idx = -1;
-      for (let i=0;i<keyframes.length;i++){
-        const kf = keyframes[i]; const x = tToX(kf.t); const y = gy + gh/2;
-        const dx = x - cx, dy = y - cy; const d2 = dx*dx + dy*dy;
-        if (d2 < best && d2 < Math.pow(12*dpr,2)){ best = d2; idx = i; }
-      }
-      return idx;
-    }
+    function hitTestKF(xCSS, yCSS){ return -1; }
 
     // 再生ヘッドのヒットテスト
     function hitTestPlayhead(xCSS, yCSS){
@@ -994,16 +967,7 @@
       const x = e.clientX - rect.left; const y = e.clientY - rect.top;
       const idx = hitTestKF(x, y);
       
-      if (idx >= 0){
-        dragKF = { idx, startX:x, moved:false, origT:keyframes[idx].t };
-        // クリックで選択し、再生ヘッドもその位置に移動
-        selectKFByIndex(idx);
-        time = keyframes[idx].t;
-        syncTimeUI();
-        // 編集用の制御点を現在の時間位置に同期
-        syncEditorPointsToCurrentTime();
-        renderCurve(getCssWidth());
-      } else if (hitTestPlayhead(x, y)) {
+      if (hitTestPlayhead(x, y)) {
         // 再生ヘッドをドラッグ開始
         dragPlayhead = { startX: x, moved: false, isDragging: true };
         timeline.style.cursor = 'grabbing';
@@ -1048,23 +1012,7 @@
         }
       }
       
-      // キーフレームのドラッグ処理
-      if (dragKF) {
-        dragKF.moved = dragKF.moved || (Math.abs(x - dragKF.startX) > 2);
-        const idx = dragKF.idx; const prev = keyframes[idx-1]; const next = keyframes[idx+1];
-        let t = xToT(x);
-        if (prev) t = Math.max(prev.t + 0.001, t);
-        if (next) t = Math.min(next.t - 0.001, t);
-        keyframes[idx].t = clamp(t, 0, duration);
-        sortKeyframes();
-        // 選択を新しい位置のインデックスに保つ
-        const newIdx = keyframes.findIndex(k=>k.id===keyframes[idx].id);
-        selectedKF = newIdx;
-        time = keyframes[newIdx].t; 
-        syncTimeUI();
-        // 編集用の制御点を現在の時間位置に同期
-        syncEditorPointsToCurrentTime();
-      }
+      // キーフレームのドラッグ処理は無効化
       
       // 再生ヘッドのドラッグ処理（タイムライン内でのみ）
       if (dragPlayhead && dragPlayhead.isDragging) {
@@ -1079,19 +1027,10 @@
       }
     });
     
-    timeline.addEventListener('pointerup', (e)=>{
-      if (dragKF) {
-        dragKF = null;
-      }
-      // 再生ヘッドのドラッグはグローバルイベントで処理されるため、
-      // ここでは何もしない
-    });
+    timeline.addEventListener('pointerup', (e)=>{});
 
     // Buttons for KF
-    addKFBtn.addEventListener('click', ()=> addKeyframeAt(time));
-    delKFBtn.addEventListener('click', ()=> deleteSelectedKF());
-    prevKFBtn.addEventListener('click', ()=> selectPreviousKeyframe());
-    nextKFBtn.addEventListener('click', ()=> selectNextKeyframe());
+    
 
     // ===== Curve editor interactions =====
     let drag = null; // { id, startX, startY, moved }
@@ -1298,20 +1237,64 @@
       reader.onload = () => {
         try {
           const data = JSON.parse(reader.result);
-          if (!data || !Array.isArray(data.keyframes)) throw new Error("invalid format");
+          if (!data || !Array.isArray(data.keyframes)) throw new Error("invalid format: keyframes missing");
           const D = typeof data.duration === "number" ? data.duration : duration;
-          // normalize points: ensure id, x, y
-          const spec = data.keyframes.map(entry => {
-            const t = clamp(+entry.t || 0, 0, D);
-            const pts = (entry.points || []).map(p => ({
-              id: +p.id || 0,
-              x: clamp(+p.x || 0, 0, 0.5),
-              y: clamp(+p.y || 0, 0, 1),
-            }));
-            // if no points, keep it dark
-            return { t, pts: pts.length ? pts : shapeOff() };
-          });
-          setKeyframesFromSpec(spec, D);
+
+          // Strict schema with controlPoints
+          const hasCP = Array.isArray(data.controlPoints);
+          if (hasCP){
+            // Validate controlPoints
+            const cps = data.controlPoints.map(cp=>{
+              const id = Number(cp.id);
+              const xv = Number(cp.x);
+              if (!Number.isFinite(id)) throw new Error("controlPoints: id must be a number");
+              if (!Number.isFinite(xv)) throw new Error("controlPoints: x must be a number");
+              const x = clamp(xv, 0, 0.5);
+              return { id, x };
+            });
+            if (cps.length === 0) throw new Error("controlPoints must not be empty");
+            // Unique ids
+            const idSet = new Set();
+            for (const cp of cps){
+              if (idSet.has(cp.id)) throw new Error("duplicate controlPoint id: "+cp.id);
+              idSet.add(cp.id);
+            }
+            // sort by x (stable)
+            cps.sort((a,b)=> (a.x===b.x? a.id-b.id : a.x-b.x));
+
+            // Validate each keyframe has exactly the same ids
+            const idList = cps.map(cp=>cp.id);
+            const spec = data.keyframes.map(entry=>{
+              const t = clamp(+entry.t || 0, 0, D);
+              const ptsRaw = Array.isArray(entry.points) ? entry.points : [];
+              if (ptsRaw.length !== idList.length) throw new Error(`keyframe @t=${t}: points length mismatch`);
+              const map = new Map(ptsRaw.map(p=>[+p.id||0, clamp(+p.y||0, 0, 1)]));
+              // check all ids exist and no extras
+              for (const id of idList){ if (!map.has(id)) throw new Error(`keyframe @t=${t}: missing id ${id}`); }
+              if (map.size !== idList.length) throw new Error(`keyframe @t=${t}: contains unknown ids`);
+              // build full points with x from controlPoints
+              const pts = cps.map(cp=>({ id: cp.id, x: cp.x, y: map.get(cp.id) }));
+              return { t, pts };
+            });
+            setKeyframesFromSpec(spec, D);
+          } else {
+            // Backward compatibility (legacy schema): validate consistent ids across frames
+            const frames = data.keyframes;
+            if (!Array.isArray(frames) || frames.length === 0) throw new Error("no keyframes");
+            const firstPts = (frames[0].points||[]).map(p=>+p.id||0);
+            const idSet0 = new Set(firstPts);
+            const spec = frames.map(entry=>{
+              const t = clamp(+entry.t || 0, 0, D);
+              const ptsRaw = Array.isArray(entry.points) ? entry.points : [];
+              const ids = ptsRaw.map(p=>+p.id||0);
+              const idSetKF = new Set(ids);
+              if (idSetKF.size !== idSet0.size) throw new Error(`keyframe @t=${t}: inconsistent point count`);
+              for (const id of idSet0){ if (!idSetKF.has(id)) throw new Error(`keyframe @t=${t}: missing id ${id}`); }
+              const pts = ptsRaw.map(p=>({ id:+p.id||0, x: clamp(+p.x||0,0,0.5), y: clamp(+p.y||0,0,1) }));
+              return { t, pts: pts.length ? pts : shapeOff() };
+            });
+            setKeyframesFromSpec(spec, D);
+          }
         } catch (err){
           alert("JSONの読み込みに失敗しました: " + err.message);
         }
@@ -1319,18 +1302,20 @@
       reader.readAsText(file);
     }
 
+    // ===== Drag & Drop JSON loader =====
+    window.addEventListener('dragover', (e)=>{ e.preventDefault(); });
+    window.addEventListener('drop', (e)=>{
+      e.preventDefault();
+      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file && /\.json$/i.test(file.name)){
+        importJSONFile(file);
+      }
+    });
+
 
 
     // Hook up buttons
-    window.addEventListener('DOMContentLoaded', ()=>{
-      const exportBtn = document.getElementById('exportJSON');
-      const importInp = document.getElementById('importJSON');
-      if (exportBtn) exportBtn.addEventListener('click', exportJSON);
-      if (importInp) importInp.addEventListener('change', (e)=>{
-        if (e.target.files && e.target.files[0]) importJSONFile(e.target.files[0]);
-        e.target.value = ""; // allow re-select same file
-      });
-    });
+    window.addEventListener('DOMContentLoaded', ()=>{});
 
     // ===== Initial =====
     function renderAll(){
