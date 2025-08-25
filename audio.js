@@ -2,162 +2,340 @@
 // Exports a factory that encapsulates WebAudio/HTMLAudio handling and
 // derives dynamics from a provided getCurrentCurveValue callback.
 
-export function createAudioController({ getCurrentCurveValue }){
-  // WebAudio state
-  let audioCtx = null;
-  let flashBuffer = null;
-  let audioLoaded = false;
-  let htmlAudio = null; // fallback
-  let audioInitialized = false;
+class HumController {
+  constructor(audioCtx) {
+    this.audioCtx = audioCtx;
+    this.gain = null;
+    this.osc1 = null;
+    this.osc2 = null;
+    this.isRunning = false;
+    this.stopTimeout = null;
+    this.baseGain = 0.025;
+    this.avgEma = 0.0;
+    this.emaAlpha = 0.2;
+  }
 
-  // Hum nodes/state
-  let humGain = null;
-  let humOsc1 = null;
-  let humOsc2 = null;
-  let isHumRunning = false;
+  async start() {
+    if (this.isRunning) {
+      this.stop();
+      await this._wait(100);
+    }
 
-  const HUM_BASE_GAIN = 0.025;
-  let humAvgEma = 0.0;
-  const HUM_EMA_ALPHA = 0.2;
+    this._clearStopTimeout();
+    this._cleanup();
 
-  async function ensureAudio(){
     try {
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') await audioCtx.resume();
-      if (!audioLoaded){
-        const isFile = location.protocol === 'file:';
-        if (!isFile){
-          try {
-            const res = await fetch('flash.wav');
-            if (!res.ok) throw new Error('fetch failed');
-            const arr = await res.arrayBuffer();
-            flashBuffer = await audioCtx.decodeAudioData(arr);
-            audioLoaded = true;
-          } catch {}
-        }
-        if (!audioLoaded){
-          if (!htmlAudio){
-            htmlAudio = new Audio('flash.wav');
-            htmlAudio.preload = 'auto';
-          }
-        }
-      }
-    } catch {}
-  }
+      this.gain = this.audioCtx.createGain();
+      this.gain.gain.value = this.baseGain;
+      this.gain.connect(this.audioCtx.destination);
 
-  function playFlash(){
-    const rate = 0.9 + Math.random()*0.20;
-    const offset = Math.random() * 0.02;
-    if (audioCtx && flashBuffer){
-      const src = audioCtx.createBufferSource();
-      src.buffer = flashBuffer;
-      try { src.detune.value = (Math.random()*200 - 100); } catch {}
-      try { src.playbackRate.value = rate; } catch {}
-      src.connect(audioCtx.destination);
-      try { src.start(0, offset); } catch {}
-      return;
-    }
-    if (htmlAudio){
-      try {
-        const a = htmlAudio.cloneNode(true);
-        try { a.preservesPitch = false; } catch {}
-        try { a.mozPreservesPitch = false; } catch {}
-        try { a.webkitPreservesPitch = false; } catch {}
-        a.playbackRate = rate;
-        try { a.currentTime = offset; } catch {}
-        a.play().catch(()=>{});
-      } catch {}
+      this.osc1 = this._createOscillator(100);
+      this.osc2 = this._createOscillator(200);
+
+      const startTime = this.audioCtx.currentTime + 0.1;
+      this.osc1.start(startTime);
+      this.osc2.start(startTime);
+
+      this.isRunning = true;
+    } catch (error) {
+      this._cleanup();
+      this.isRunning = false;
+      throw error;
     }
   }
 
-  function computeMaxCurveValue(){
-    let maxY = 0;
-    const S = 32;
-    for (let i=0;i<S;i++){
-      const x = i/(S-1);
-      const y = getCurrentCurveValue(x);
-      if (y > maxY) maxY = y;
-    }
-    return maxY;
+  stop() {
+    if (!this.isRunning) return;
+
+    this._clearStopTimeout();
+    
+    try {
+      const now = this.audioCtx.currentTime;
+      this.gain.gain.setTargetAtTime(0.0, now, 0.15);
+    } catch (error) {}
+
+    this.stopTimeout = setTimeout(() => {
+      this._cleanup();
+      this.isRunning = false;
+      this.stopTimeout = null;
+    }, 400);
   }
-  function computeAvgCurveValue(){
+
+  updateDynamics(getCurrentCurveValue) {
+    if (!this.isRunning || !this.gain) return;
+
+    const avg = this._computeAvgCurveValue(getCurrentCurveValue);
+    this.avgEma = this.emaAlpha * avg + (1 - this.emaAlpha) * this.avgEma;
+    const target = Math.max(0, Math.min(1, 1 - this.avgEma)) * this.baseGain;
+    
+    try {
+      this.gain.gain.setTargetAtTime(target, this.audioCtx.currentTime, 0.05);
+    } catch (error) {}
+  }
+
+  _createOscillator(frequency) {
+    const osc = this.audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = frequency;
+    osc.connect(this.gain);
+    return osc;
+  }
+
+  _computeAvgCurveValue(getCurrentCurveValue) {
     let sumY = 0;
     const S = 32;
-    for (let i=0;i<S;i++){
-      const x = i/(S-1);
+    for (let i = 0; i < S; i++) {
+      const x = i / (S - 1);
       sumY += getCurrentCurveValue(x);
     }
     return sumY / S;
   }
 
-  function updateHumDynamics(){
-    if (!audioCtx || !humGain) return;
-    const avg = computeAvgCurveValue();
-    humAvgEma = HUM_EMA_ALPHA * avg + (1 - HUM_EMA_ALPHA) * humAvgEma;
-    const target = Math.max(0, Math.min(1, 1 - humAvgEma)) * HUM_BASE_GAIN;
-    try { humGain.gain.setTargetAtTime(target, audioCtx.currentTime, 0.05); } catch {}
-  }
-
-  let wasAboveFlash = false;
-  async function checkFlash(){
-    const maxY = computeMaxCurveValue();
-    const above = maxY > 0.7;
-    if (!wasAboveFlash && above){
-      await ensureAudio();
-      playFlash();
-    }
-    wasAboveFlash = above;
-  }
-
-  async function startHum(){
-    await ensureAudio();
-    if (!audioCtx) return;
-    if (isHumRunning) return;
-    humGain = audioCtx.createGain();
-    humGain.gain.value = HUM_BASE_GAIN;
-    humGain.connect(audioCtx.destination);
-    humOsc1 = audioCtx.createOscillator();
-    humOsc1.type = 'sine';
-    humOsc1.frequency.value = 100;
-    humOsc1.connect(humGain);
-    humOsc2 = audioCtx.createOscillator();
-    humOsc2.type = 'sine';
-    humOsc2.frequency.value = 200;
-    humOsc2.connect(humGain);
-    try { humOsc1.start(); } catch {}
-    try { humOsc2.start(); } catch {}
-    isHumRunning = true;
-  }
-  function stopHum(){
-    if (!audioCtx) return;
-    if (!isHumRunning) return;
+  _cleanup() {
     try {
-      const now = audioCtx.currentTime;
-      humGain.gain.setTargetAtTime(0.0, now, 0.15);
-    } catch {}
-    const toStop = [humOsc1, humOsc2];
-    setTimeout(()=>{
-      for (const n of toStop){ try { n && n.stop(); } catch {} }
-      humOsc1 = humOsc2 = null;
-      if (humGain){ try { humGain.disconnect(); } catch {} humGain = null; }
-      isHumRunning = false;
-    }, 400);
+      if (this.gain) {
+        this.gain.disconnect();
+        this.gain = null;
+      }
+      if (this.osc1) {
+        try { this.osc1.stop(); } catch (e) {}
+        this.osc1 = null;
+      }
+      if (this.osc2) {
+        try { this.osc2.stop(); } catch (e) {}
+        this.osc2 = null;
+      }
+    } catch (error) {}
   }
 
-  function initAudioOnGesture(){
-    if (audioInitialized) return;
-    audioInitialized = true;
+  _clearStopTimeout() {
+    if (this.stopTimeout) {
+      clearTimeout(this.stopTimeout);
+      this.stopTimeout = null;
+    }
+  }
+
+  _wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  getDebugInfo() {
+    return {
+      isRunning: this.isRunning,
+      gain: !!this.gain,
+      osc1: !!this.osc1,
+      osc2: !!this.osc2,
+      stopTimeout: !!this.stopTimeout
+    };
+  }
+}
+
+class FlashController {
+  constructor(audioCtx) {
+    this.audioCtx = audioCtx;
+    this.buffer = null;
+    this.htmlAudio = null;
+    this.isLoaded = false;
+    this.wasAboveThreshold = false;
+    this.threshold = 0.7;
+  }
+
+  async load() {
+    if (this.isLoaded) return true;
+
+    try {
+      const isFile = location.protocol === 'file:';
+      if (!isFile) {
+        const response = await fetch('flash.wav');
+        if (!response.ok) throw new Error('fetch failed');
+        const arrayBuffer = await response.arrayBuffer();
+        this.buffer = await this.audioCtx.decodeAudioData(arrayBuffer);
+        this.isLoaded = true;
+        return true;
+      }
+    } catch (error) {}
+
+    if (!this.htmlAudio) {
+      this.htmlAudio = new Audio('flash.wav');
+      this.htmlAudio.preload = 'auto';
+    }
+    return true;
+  }
+
+  async play() {
+    const rate = 0.9 + Math.random() * 0.20;
+    const offset = Math.random() * 0.02;
+
+    if (this.audioCtx && this.buffer) {
+      this._playWebAudio(rate, offset);
+    } else if (this.htmlAudio) {
+      this._playHTMLAudio(rate, offset);
+    }
+  }
+
+  _playWebAudio(rate, offset) {
+    try {
+      const source = this.audioCtx.createBufferSource();
+      source.buffer = this.buffer;
+      source.detune.value = (Math.random() * 200 - 100);
+      source.playbackRate.value = rate;
+      source.connect(this.audioCtx.destination);
+      source.start(0, offset);
+    } catch (error) {}
+  }
+
+  _playHTMLAudio(rate, offset) {
+    try {
+      const audio = this.htmlAudio.cloneNode(true);
+      audio.preservesPitch = false;
+      audio.mozPreservesPitch = false;
+      audio.webkitPreservesPitch = false;
+      audio.playbackRate = rate;
+      audio.currentTime = offset;
+      audio.play().catch(error => {});
+    } catch (error) {}
+  }
+
+  async checkAndPlay(getCurrentCurveValue) {
+    const maxY = this._computeMaxCurveValue(getCurrentCurveValue);
+    const above = maxY > this.threshold;
+    
+    if (!this.wasAboveThreshold && above) {
+      await this.play();
+    }
+    this.wasAboveThreshold = above;
+  }
+
+  _computeMaxCurveValue(getCurrentCurveValue) {
+    let maxY = 0;
+    const S = 32;
+    for (let i = 0; i < S; i++) {
+      const x = i / (S - 1);
+      const y = getCurrentCurveValue(x);
+      if (y > maxY) maxY = y;
+    }
+    return maxY;
+  }
+
+  getDebugInfo() {
+    return {
+      isLoaded: this.isLoaded,
+      buffer: !!this.buffer,
+      htmlAudio: !!this.htmlAudio,
+      wasAboveThreshold: this.wasAboveThreshold
+    };
+  }
+}
+
+class AudioContextManager {
+  constructor() {
+    this.context = null;
+    this.isInitialized = false;
+  }
+
+  async ensureContext() {
+    try {
+      if (!this.context || this.context.state === 'closed') {
+        this.context = new (window.AudioContext || window.webkitAudioContext)();
+      }
+
+      if (this.context.state === 'suspended') {
+        await this.context.resume();
+      }
+
+      if (this.context.state !== 'running') {
+        try {
+          await this.context.resume();
+          if (this.context.state !== 'running') {
+            return false;
+          }
+        } catch (error) {
+          return false;
+        }
+      }
+
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  getContext() {
+    return this.context;
+  }
+
+  getDebugInfo() {
+    return {
+      contextExists: !!this.context,
+      contextState: this.context?.state,
+      isInitialized: this.isInitialized
+    };
+  }
+}
+
+export function createAudioController({ getCurrentCurveValue }) {
+  const contextManager = new AudioContextManager();
+  let humController = null;
+  let flashController = null;
+
+  async function ensureAudio() {
+    const success = await contextManager.ensureContext();
+    if (success && !flashController) {
+      flashController = new FlashController(contextManager.getContext());
+      await flashController.load();
+    }
+    return success;
+  }
+
+  async function startHum() {
+    const audioReady = await ensureAudio();
+    if (!audioReady) {
+      return;
+    }
+
+    if (!humController) {
+      humController = new HumController(contextManager.getContext());
+    }
+
+    await humController.start();
+  }
+
+  function stopHum() {
+    if (humController) {
+      humController.stop();
+    }
+  }
+
+  function updateHumDynamics() {
+    if (humController) {
+      humController.updateDynamics(getCurrentCurveValue);
+    }
+  }
+
+  async function checkFlash() {
+    if (flashController) {
+      await flashController.checkAndPlay(getCurrentCurveValue);
+    }
+  }
+
+  function initAudioOnGesture() {
+    if (contextManager.isInitialized) return;
+    contextManager.isInitialized = true;
     ensureAudio();
   }
 
   return {
     ensureAudio,
-    playFlash,
-    updateHumDynamics,
-    checkFlash,
     startHum,
     stopHum,
+    updateHumDynamics,
+    checkFlash,
     initAudioOnGesture,
+    getDebugInfo: () => ({
+      ...contextManager.getDebugInfo(),
+      ...(humController ? humController.getDebugInfo() : { humController: false }),
+      ...(flashController ? flashController.getDebugInfo() : { flashController: false })
+    })
   };
 }
 

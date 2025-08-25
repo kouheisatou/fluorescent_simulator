@@ -118,9 +118,8 @@ function syncTimeUI(){
 // Play/Pause
 function setPlaying(v){
   if (v) {
-    // 旧UIの選択解除は不要
-    audio.startHum();
     player.play(()=>{ syncTimeUI(); });
+    audio.startHum();
   } else {
     player.pause();
     audio.stopHum();
@@ -158,6 +157,8 @@ function powerOn(){
 function powerOff(){
   setPlaying(false);
   player.reset();
+  // ハム音の状態を確実にリセット
+  audio.stopHum();
   syncTimeUI();
 }
 
